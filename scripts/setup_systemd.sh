@@ -33,7 +33,18 @@ systemctl daemon-reload
 systemctl enable voice-agent
 systemctl restart voice-agent
 
+PUBLIC_IP="$(curl -4 -sf --max-time 5 ifconfig.me 2>/dev/null || true)"
+PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+
 echo "==> Systemd service installed and started"
 echo "    Status:  systemctl status voice-agent"
 echo "    Logs:    journalctl -u voice-agent -f"
-echo "    UI:      http://$(hostname -I | awk '{print $1}'):8000"
+if [[ -n "$PUBLIC_IP" ]]; then
+    echo "    UI:      http://${PUBLIC_IP}:8000  (public IP — use from your browser)"
+else
+    echo "    UI:      http://YOUR_PUBLIC_IP:8000"
+fi
+if [[ -n "$PRIVATE_IP" && "$PRIVATE_IP" != "$PUBLIC_IP" ]]; then
+    echo "    Note:    $PRIVATE_IP is a private/cloud IP — not reachable from the internet"
+fi
+echo "    HTTPS:   sudo DOMAIN=voice.metl.run CERTBOT_EMAIL=you@example.com ./scripts/setup_nginx.sh"
