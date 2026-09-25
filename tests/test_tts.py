@@ -1,40 +1,28 @@
-"""Tests for Azure TTS result handling (mocked, no live API)."""
+"""Tests for Kokoro TTS helpers."""
 
 import unittest
-from unittest.mock import MagicMock
 
-from azure.cognitiveservices.speech import ResultReason
-
-from app.tts import audio_from_synthesis_result
+from app.tts import pick_kokoro_voice
 
 
-class TestAudioFromSynthesisResult(unittest.TestCase):
-    def test_success_returns_audio_bytes(self) -> None:
-        result = MagicMock()
-        result.reason = ResultReason.SynthesizingAudioCompleted
-        result.audio_data = b"RIFF....wav"
-        self.assertEqual(audio_from_synthesis_result(result), b"RIFF....wav")
+class TestPickKokoroVoice(unittest.TestCase):
+    def test_prefers_first_available(self) -> None:
+        available = {"am_adam", "af_heart", "af_bella"}
+        self.assertEqual(
+            pick_kokoro_voice(("af_heart", "am_adam"), available),
+            "af_heart",
+        )
 
-    def test_empty_audio_raises(self) -> None:
-        result = MagicMock()
-        result.reason = ResultReason.SynthesizingAudioCompleted
-        result.audio_data = b""
-        with self.assertRaises(RuntimeError) as ctx:
-            audio_from_synthesis_result(result)
-        self.assertIn("empty", str(ctx.exception).lower())
+    def test_falls_back_when_preferred_missing(self) -> None:
+        available = {"am_adam", "bf_emma"}
+        self.assertEqual(
+            pick_kokoro_voice(("af_heart", "am_adam"), available),
+            "am_adam",
+        )
 
-    def test_canceled_raises_with_details(self) -> None:
-        details = MagicMock()
-        details.error_details = "Invalid voice name"
-        details.reason = "Error"
-
-        result = MagicMock()
-        result.reason = ResultReason.Canceled
-        result.cancellation_details = details
-
-        with self.assertRaises(RuntimeError) as ctx:
-            audio_from_synthesis_result(result)
-        self.assertIn("Invalid voice name", str(ctx.exception))
+    def test_raises_when_no_voices(self) -> None:
+        with self.assertRaises(RuntimeError):
+            pick_kokoro_voice(("af_heart",), set())
 
 
 if __name__ == "__main__":

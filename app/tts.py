@@ -1,58 +1,91 @@
-"""Azure neural text-to-speech synthesis."""
+"""Local Kokoro-82M ONNX text-to-speech."""
 
 import asyncio
+import inspect
+import io
 import logging
-from typing import Any
+from typing import Optional
 
-import azure.cognitiveservices.speech as speechsdk
-from azure.cognitiveservices.speech import ResultReason
+import soundfile as sf
+from kokoro_onnx import Kokoro
 
-from app.config import AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_SPEECH_VOICE
+from app.config import (
+    KOKORO_MODEL_PATH,
+    KOKORO_SPEED,
+    KOKORO_VOICE,
+    KOKORO_VOICES_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
+_kokoro: Optional[Kokoro] = None
+_voice: Optional[str] = None
+_create_kwargs: dict = {}
 
-def audio_from_synthesis_result(result: Any) -> bytes:
-    """Extract WAV bytes from a Speech SDK synthesis result or raise with details."""
-    if result.reason == ResultReason.SynthesizingAudioCompleted:
-        audio = result.audio_data
-        if not audio:
-            raise RuntimeError("Azure Speech TTS returned empty audio")
-        return bytes(audio)
 
-    if result.reason == ResultReason.Canceled:
-        details = result.cancellation_details
-        if details is not None:
-            message = details.error_details or str(details.reason)
-        else:
-            message = "unknown cancellation"
-        raise RuntimeError(f"Azure Speech TTS canceled: {message}")
+def pick_kokoro_voice(preferred: tuple[str, ...], available: set[str]) -> str:
+    """Choose the first preferred voice present in the voices bundle."""
+    for name in preferred:
+        if name in available:
+            return name
+    if not available:
+        raise RuntimeError("No Kokoro voices found in voices.bin")
+    return sorted(available)[0]
 
-    raise RuntimeError(f"Azure Speech TTS failed: {result.reason}")
+
+def _init_kokoro() -> Kokoro:
+    global _kokoro, _voice, _create_kwargs
+
+    if _kokoro is not None:
+        return _kokoro
+
+    if not KOKORO_MODEL_PATH.is_file():
+        raise RuntimeError(
+            f"Kokoro model not found at {KOKORO_MODEL_PATH}. "
+            "Run scripts/download_models.sh or deploy.sh."
+        )
+    if not KOKORO_VOICES_PATH.is_file():
+        raise RuntimeError(
+            f"Kokoro voices not found at {KOKORO_VOICES_PATH}. "
+            "Run scripts/download_models.sh or deploy.sh."
+        )
+
+    _kokoro = Kokoro(str(KOKORO_MODEL_PATH), str(KOKORO_VOICES_PATH))
+    available = set(_kokoro.get_voices())
+
+    if KOKORO_VOICE:
+        if KOKORO_VOICE not in available:
+            raise RuntimeError(
+                f"KOKORO_VOICE={KOKORO_VOICE!r} not in voices.bin "
+                f"(available: {', '.join(sorted(available)[:12])}…)"
+            )
+        _voice = KOKORO_VOICE
+    else:
+        _voice = pick_kokoro_voice(("af_heart", "af_bella", "am_adam"), available)
+
+    sig = inspect.signature(_kokoro.create)
+    if "lang" in sig.parameters:
+        _create_kwargs["lang"] = "en-us"
+
+    logger.info("Kokoro TTS voice=%s speed=%s", _voice, KOKORO_SPEED)
+    return _kokoro
 
 
 def _synth_sync(text: str) -> bytes:
-    speech_config = speechsdk.SpeechConfig(
-        subscription=AZURE_SPEECH_KEY,
-        region=AZURE_SPEECH_REGION,
+    kokoro = _init_kokoro()
+    samples, sample_rate = kokoro.create(
+        text,
+        voice=_voice,
+        speed=KOKORO_SPEED,
+        **_create_kwargs,
     )
-    speech_config.speech_synthesis_voice_name = AZURE_SPEECH_VOICE
-    speech_config.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
-    )
-
-    synthesizer = speechsdk.SpeechSynthesizer(
-        speech_config=speech_config,
-        audio_config=None,
-    )
-    result = synthesizer.speak_text_async(text).get()
-    audio = audio_from_synthesis_result(result)
-    logger.debug("Azure TTS synthesized %d bytes for %r", len(audio), text[:80])
-    return audio
+    buffer = io.BytesIO()
+    sf.write(buffer, samples, sample_rate, format="WAV")
+    return buffer.getvalue()
 
 
 async def synth_chunk(text: str) -> bytes:
-    """Synthesize text into in-memory WAV bytes (24 kHz mono)."""
+    """Synthesize text into in-memory WAV bytes."""
     cleaned = text.strip()
     if not cleaned:
         return b""
