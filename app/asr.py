@@ -108,7 +108,7 @@ class AzureSpeechSession:
     def push_audio(self, pcm_bytes: bytes) -> None:
         if self._closed or not self._push_stream or not pcm_bytes:
             return
-        self._push_stream.write(pcm_bytes)
+        self._push_stream.write(bytes(pcm_bytes))
 
     def _handle_recognizing(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
         if self._closed:
@@ -132,10 +132,18 @@ class AzureSpeechSession:
     def _handle_canceled(self, evt: speechsdk.SpeechRecognitionCanceledEventArgs) -> None:
         if self._closed:
             return
-        if evt.reason == speechsdk.CancellationReason.Error:
-            message = evt.error_details or "Azure Speech recognition canceled"
-            logger.error("Azure Speech error: %s", message)
+        reason = evt.reason
+        if reason == speechsdk.CancellationReason.Error:
+            message = evt.error_details or "Azure Speech recognition error"
+            logger.error("Azure Speech canceled (error): %s", message)
             self._schedule(self._on_error(message))
+            return
+        reason_name = getattr(reason, "name", str(reason))
+        message = f"Azure Speech recognition stopped: {reason_name}"
+        if evt.error_details:
+            message = f"{message} — {evt.error_details}"
+        logger.warning("Azure Speech canceled: %s", message)
+        self._schedule(self._on_error(message))
 
     def _close_sync(self) -> None:
         if self._recognizer is not None:

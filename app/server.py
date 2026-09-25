@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from app import asr, llm, tts
 from app.asr import AzureSpeechSession, build_final_event, build_partial_event
-from app.vad import is_speech_start, pcm16_to_float32
+from app.vad import compute_rms, is_speech_start, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class VoiceSession:
         self.active_task: asyncio.Task | None = None
         self.ai_busy = False
         self._closed = False
+        self._frames_received = 0
+        self._last_audio_log_at = 0.0
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -145,6 +148,21 @@ class VoiceSession:
         frame = pcm16_to_float32(pcm_bytes)
         if frame.size == 0:
             return
+
+        self._frames_received += 1
+        if self._frames_received == 1:
+            logger.info("first audio frame received bytes=%d", len(pcm_bytes))
+
+        now = time.monotonic()
+        if now - self._last_audio_log_at >= 5.0:
+            rms = compute_rms(frame)
+            logger.info(
+                "audio ingress frames=%d last_frame_bytes=%d rms=%.4f",
+                self._frames_received,
+                len(pcm_bytes),
+                rms,
+            )
+            self._last_audio_log_at = now
 
         if is_speech_start(frame) and self.ai_busy:
             await self.handle_barge_in()
