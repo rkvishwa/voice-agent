@@ -1,4 +1,9 @@
 # Nginx reverse proxy for the voice agent (HTTP — used before certbot or for ACME)
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80;
     listen [::]:80;
