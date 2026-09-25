@@ -8,14 +8,14 @@
 </head>
 <body class="h-dvh overflow-hidden bg-zinc-50 text-zinc-900 antialiased">
   <div class="flex h-full min-h-0 flex-col md:flex-row">
-    <aside class="flex h-1/2 min-h-0 flex-col border-b border-zinc-200 bg-white md:h-full md:w-96 md:shrink-0 md:border-b-0 md:border-r">
-      <div class="min-h-0 flex-1 overflow-y-auto p-5">
-        <header class="mb-6">
-          <h1 class="text-xl font-semibold tracking-tight text-zinc-900">Voice Agent</h1>
-          <p class="mt-1 text-sm text-zinc-500">Full-duplex assistant with barge-in</p>
+    <aside class="shrink-0 border-b border-zinc-200 bg-white max-md:overflow-visible md:flex md:h-full md:min-h-0 md:w-96 md:shrink-0 md:flex-col md:overflow-hidden md:border-b-0 md:border-r">
+      <div class="p-4 max-md:overflow-visible md:min-h-0 md:flex-1 md:overflow-y-auto md:p-5">
+        <header class="mb-4 md:mb-6">
+          <h1 class="text-lg font-semibold tracking-tight text-zinc-900 md:text-xl">Voice Agent</h1>
+          <p class="mt-0.5 text-xs text-zinc-500 md:mt-1 md:text-sm">Full-duplex assistant with barge-in</p>
         </header>
 
-        <section class="space-y-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 shadow-sm">
+        <section class="space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 shadow-sm md:space-y-4 md:p-4">
           <div class="space-y-1">
             <label for="ttsEngineSelect" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Speech engine</label>
             <select id="ttsEngineSelect" class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50">
@@ -37,17 +37,17 @@
           <p id="ttsHint" class="min-h-[1.25rem] text-xs text-zinc-500"></p>
         </section>
 
-        <div class="mt-4 flex flex-wrap gap-3">
-          <button id="startBtn" type="button" class="rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40">Start</button>
-          <button id="stopBtn" type="button" disabled class="rounded-lg border border-zinc-300 bg-white px-5 py-2.5 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40">Stop</button>
+        <div class="mt-3 flex flex-wrap gap-2 md:mt-4 md:gap-3">
+          <button id="startBtn" type="button" class="flex-1 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40 md:flex-none md:px-5 md:py-2.5">Start</button>
+          <button id="stopBtn" type="button" disabled class="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 md:flex-none md:px-5 md:py-2.5">Stop</button>
         </div>
 
-        <button id="logoutBtn" type="button" class="mt-6 w-full rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-600 shadow-sm transition hover:bg-zinc-50">Log out</button>
+        <button id="logoutBtn" type="button" class="mt-3 w-full rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-600 shadow-sm transition hover:bg-zinc-50 md:mt-6">Log out</button>
       </div>
     </aside>
 
-    <main class="flex h-1/2 min-h-0 flex-1 flex-col bg-zinc-50 md:h-full">
-      <div class="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
+    <main class="flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-50 md:h-full">
+      <div class="flex min-h-0 flex-1 flex-col overflow-hidden p-4 md:p-5">
         <h2 class="mb-3 shrink-0 text-xs font-medium uppercase tracking-wide text-zinc-500">Conversation</h2>
         <div id="status" class="shrink-0 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-center text-sm text-zinc-500 shadow-sm">Disconnected</div>
         <div id="transcript" class="mt-4 min-h-0 flex-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"></div>
