@@ -20,7 +20,14 @@ from app.asr import (
     build_startup_error_event,
 )
 from app.barge_in import BargeInGate
-from app.config import AZURE_SPEECH_LANGUAGE, AZURE_SPEECH_REGION, TTS_BACKEND, TTS_SPEED
+from app.config import (
+    AZURE_SPEECH_LANGUAGE,
+    AZURE_SPEECH_REGION,
+    SAMPLE_RATE,
+    TTS_BACKEND,
+    TTS_SPEED,
+)
+from app.echo_guard import is_likely_agent_echo
 from app.tts import (
     TtsBackend,
     default_voice_for_backend,
@@ -35,6 +42,9 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 CLAUSE_DELIMITERS = re.compile(r"([.,!?\n])")
+
+# ~1s of PCM16 silence at 16 kHz to flush Azure Speech utterance boundaries.
+STT_FLUSH_SILENCE_BYTES = int(SAMPLE_RATE * 1.0) * 2
 
 app = FastAPI(title="Voice Agent")
 
@@ -71,6 +81,9 @@ class VoiceSession:
         self.tts_speed: float = TTS_SPEED
         self._stt_muted: bool = False
         self._stt_ignore_finals_until: float = 0.0
+        self._agent_audio_open: bool = False
+        self._playback_epoch: int = 0
+        self._recent_agent_text: str | None = None
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -111,19 +124,43 @@ class VoiceSession:
             return True
         return time.monotonic() < self._stt_ignore_finals_until
 
+    def _flush_stt_silence(self) -> None:
+        silence = bytes(STT_FLUSH_SILENCE_BYTES)
+        self.speech_session.push_audio(silence)
+
     def mute_stt_for_playback(self) -> None:
         if not self._stt_muted:
             self._stt_muted = True
+            self._flush_stt_silence()
             logger.info("STT muted for agent playback")
 
-    def handle_playback_idle(self) -> None:
+    def handle_playback_idle(self, epoch: int | None = None) -> None:
+        if self._agent_audio_open:
+            logger.debug(
+                "ignored playback_idle while agent audio open epoch=%s", epoch
+            )
+            return
+        if epoch is None or epoch != self._playback_epoch:
+            logger.debug(
+                "ignored playback_idle stale epoch=%s expected=%s",
+                epoch,
+                self._playback_epoch,
+            )
+            return
+        self._flush_stt_silence()
         self._stt_muted = False
         self._stt_ignore_finals_until = time.monotonic() + 0.4
-        logger.info("STT unmuted after playback_idle (400ms final grace)")
+        logger.info(
+            "STT unmuted after playback_idle epoch=%s (400ms final grace)",
+            epoch,
+        )
 
     async def handle_barge_in(self) -> None:
+        self._agent_audio_open = False
+        self._stt_muted = True
+        self._flush_stt_silence()
         self._stt_muted = False
-        self._stt_ignore_finals_until = 0.0
+        self._stt_ignore_finals_until = time.monotonic() + 0.25
         self.turn_id += 1
         await self.cancel_active_task()
         await self.send_json({"type": "barge_in"})
@@ -154,6 +191,11 @@ class VoiceSession:
             if text.strip() and self._stt_results_suppressed():
                 logger.debug("dropped STT final while suppressed: %s", text[:80])
             return
+        if is_likely_agent_echo(text, self._recent_agent_text):
+            logger.info("dropped echo STT final: %s", text[:120])
+            self._recent_agent_text = None
+            return
+        self._recent_agent_text = None
         turn_id = self.turn_id
         await self.send_json(build_final_event(text, turn_id))
         self.launch_turn(text, turn_id)
@@ -168,14 +210,18 @@ class VoiceSession:
             self.active_task.cancel()
         self.active_task = asyncio.create_task(self.process_turn(user_text, turn_id))
 
-    async def _send_agent_audio(self, wav: bytes, turn_id: int) -> None:
+    async def _send_agent_audio(self, wav: bytes, turn_id: int) -> bool:
         if not wav or turn_id != self.turn_id:
-            return
+            return False
+        if not self._agent_audio_open:
+            self._agent_audio_open = True
         self.mute_stt_for_playback()
+        self._playback_epoch += 1
         if not self._barge_in.armed:
             self._barge_in.arm()
             logger.info("turn_id=%s barge-in armed after first audio chunk", turn_id)
         await self.send_wav(wav)
+        return True
 
     async def process_turn(self, user_text: str, turn_id: int) -> None:
         self.ai_busy = True
@@ -195,6 +241,7 @@ class VoiceSession:
 
             agent_text_parts: list[str] = []
             clause_buffer = ""
+            sent_audio = False
 
             async for token in llm.stream_llm_response(self.history):
                 if turn_id != self.turn_id:
@@ -215,7 +262,8 @@ class VoiceSession:
                             self.tts_voice,
                             self.tts_speed,
                         )
-                        await self._send_agent_audio(wav, turn_id)
+                        if await self._send_agent_audio(wav, turn_id):
+                            sent_audio = True
 
             remainder = clause_buffer.strip()
             if remainder:
@@ -226,7 +274,8 @@ class VoiceSession:
                     self.tts_voice,
                     self.tts_speed,
                 )
-                await self._send_agent_audio(wav, turn_id)
+                if await self._send_agent_audio(wav, turn_id):
+                    sent_audio = True
 
             agent_text = " ".join(agent_text_parts).strip()
             if agent_text and turn_id == self.turn_id:
@@ -234,6 +283,16 @@ class VoiceSession:
                     {"type": "transcript", "role": "agent", "text": agent_text}
                 )
                 self.history.append({"role": "assistant", "content": agent_text})
+                self._recent_agent_text = agent_text
+                if sent_audio:
+                    self._agent_audio_open = False
+                    await self.send_json(
+                        {
+                            "type": "agent_audio_done",
+                            "turn_id": turn_id,
+                            "epoch": self._playback_epoch,
+                        }
+                    )
 
         except asyncio.CancelledError:
             raise
@@ -242,6 +301,7 @@ class VoiceSession:
             await self.send_json({"type": "error", "message": str(exc)})
         finally:
             self._barge_in.disarm()
+            self._agent_audio_open = False
             self.ai_busy = False
             self.active_task = None
 
@@ -275,12 +335,13 @@ class VoiceSession:
             )
             self._last_audio_log_at = now
 
-        if self._stt_muted:
-            return
-
-        if self.ai_busy and self._barge_in.register_frame(pcm16_to_float32(boosted)):
+        boosted_frame = pcm16_to_float32(boosted)
+        if self.ai_busy and self._barge_in.register_frame(boosted_frame):
             logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()
+            return
+
+        if self._stt_muted:
             return
 
         self.speech_session.push_audio(boosted)
@@ -335,7 +396,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             {"type": "error", "message": str(exc)}
                         )
                 elif msg_type == "playback_idle":
-                    session.handle_playback_idle()
+                    epoch = payload.get("epoch")
+                    if isinstance(epoch, bool):
+                        epoch = None
+                    elif epoch is not None:
+                        try:
+                            epoch = int(epoch)
+                        except (TypeError, ValueError):
+                            epoch = None
+                    session.handle_playback_idle(epoch)
                 elif msg_type == "barge_in":
                     logger.info("client barge-in")
                     await session.handle_barge_in()

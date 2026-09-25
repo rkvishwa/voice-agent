@@ -164,8 +164,10 @@
     const SPEECH_RMS_THRESHOLD = 0.02;
     const BARGE_IN_PLAYBACK_RMS = 0.04;
     const BARGE_IN_SUSTAINED_MS = 200;
-    const ECHO_TAIL_MS = 600;
+    const ECHO_TAIL_MS = 800;
     const MIC_GAIN = 3.0;
+    const BARGE_IN_ABOVE_FLOOR = 0.025;
+    const BARGE_IN_FLOOR_RATIO = 1.8;
 
     const TTS_STORAGE_KEY = 'voice-agent-tts-v1';
 
@@ -199,6 +201,10 @@
     let inEchoTail = false;
     let echoTailTimer = null;
     let playbackBargeInSince = null;
+    let agentPlaybackActive = false;
+    let agentAudioStreamComplete = false;
+    let pendingPlaybackIdleEpoch = null;
+    let playbackNoiseFloor = 0;
     let liveCaptionEl = null;
     let speechReady = false;
     let startupFailed = false;
@@ -333,7 +339,13 @@
     }
 
     function agentAudible() {
-      return isPlaying || playbackQueue.length > 0 || inEchoTail;
+      if (isPlaying || playbackQueue.length > 0 || inEchoTail) {
+        return true;
+      }
+      if (agentPlaybackActive && !agentAudioStreamComplete) {
+        return true;
+      }
+      return false;
     }
 
     function micUploadAllowed() {
@@ -350,10 +362,17 @@
 
     function sendPlaybackIdle() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: 'playback_idle' }));
+      if (pendingPlaybackIdleEpoch === null) return;
+      ws.send(JSON.stringify({ type: 'playback_idle', epoch: pendingPlaybackIdleEpoch }));
+      pendingPlaybackIdleEpoch = null;
+      agentPlaybackActive = false;
+      agentAudioStreamComplete = false;
     }
 
     function beginEchoTail() {
+      if (!agentAudioStreamComplete) {
+        return;
+      }
       cancelEchoTail();
       inEchoTail = true;
       echoTailTimer = setTimeout(() => {
@@ -361,6 +380,14 @@
         inEchoTail = false;
         sendPlaybackIdle();
       }, ECHO_TAIL_MS);
+    }
+
+    function resetAgentPlaybackState() {
+      agentPlaybackActive = false;
+      agentAudioStreamComplete = false;
+      pendingPlaybackIdleEpoch = null;
+      playbackNoiseFloor = 0;
+      playbackBargeInSince = null;
     }
 
     function flushPendingSamples() {
@@ -382,12 +409,22 @@
       }
     }
 
+    function bargeInThreshold() {
+      const floorBoost = playbackNoiseFloor * BARGE_IN_FLOOR_RATIO + BARGE_IN_ABOVE_FLOOR;
+      return Math.max(BARGE_IN_PLAYBACK_RMS, floorBoost);
+    }
+
     function maybeClientBargeIn(rms) {
       if (!agentAudible()) {
         playbackBargeInSince = null;
+        playbackNoiseFloor = playbackNoiseFloor * 0.95;
         return;
       }
-      if (rms > BARGE_IN_PLAYBACK_RMS) {
+      playbackNoiseFloor = playbackNoiseFloor
+        ? Math.max(rms * 0.35, playbackNoiseFloor * 0.92 + rms * 0.08)
+        : rms;
+      const threshold = bargeInThreshold();
+      if (rms > threshold) {
         const now = performance.now();
         if (playbackBargeInSince === null) {
           playbackBargeInSince = now;
@@ -402,7 +439,7 @@
 
     function handleBargeIn() {
       cancelEchoTail();
-      playbackBargeInSince = null;
+      resetAgentPlaybackState();
       pendingSamples = new Float32Array(0);
       if (currentSource) {
         try { currentSource.stop(); } catch (_) {}
@@ -426,9 +463,9 @@
 
     async function playNext() {
       if (isPlaying || playbackQueue.length === 0) return;
-      const ctx = await ensurePlaybackContext();
       isPlaying = true;
       setStatus('Agent speaking…', 'speaking');
+      const ctx = await ensurePlaybackContext();
 
       const arrayBuffer = playbackQueue.shift();
       try {
@@ -455,6 +492,10 @@
     }
 
     function enqueueAudio(arrayBuffer) {
+      if (!agentPlaybackActive) {
+        agentPlaybackActive = true;
+        agentAudioStreamComplete = false;
+      }
       cancelEchoTail();
       playbackQueue.push(arrayBuffer);
       playNext();
@@ -633,6 +674,12 @@
               } else {
                 addTranscript(msg.role, msg.text);
               }
+            } else if (msg.type === 'agent_audio_done') {
+              agentAudioStreamComplete = true;
+              pendingPlaybackIdleEpoch = msg.epoch;
+              if (!isPlaying && playbackQueue.length === 0) {
+                beginEchoTail();
+              }
             } else if (msg.type === 'barge_in') {
               handleBargeIn();
             } else if (msg.type === 'error') {
@@ -677,6 +724,7 @@
       clearLiveCaption();
       pendingSamples = new Float32Array(0);
       resamplePhase = 0;
+      resetAgentPlaybackState();
 
       setStatus('Requesting microphone access…');
 
@@ -690,8 +738,8 @@
         audio: {
           channelCount: 1,
           sampleRate: TARGET_RATE,
-          echoCancellation: false,
-          noiseSuppression: false,
+          echoCancellation: true,
+          noiseSuppression: true,
           autoGainControl: true,
         },
       });
