@@ -1,12 +1,13 @@
 """Tests for STT mute during agent playback (echo loop prevention)."""
 
 import asyncio
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 
-from app.config import BARGE_IN_SUSTAINED_FRAMES, RMS_BARGE_IN_PLAYBACK_THRESHOLD
+from app.config import BARGE_IN_VOICED_WINDOW, FRAME_SAMPLES, RMS_BARGE_IN_PLAYBACK_THRESHOLD
 from app.server import VoiceSession
 
 
@@ -87,7 +88,7 @@ class TestSttMute(unittest.IsolatedAsyncioTestCase):
 
     def _loud_pcm_bytes(self) -> bytes:
         level = RMS_BARGE_IN_PLAYBACK_THRESHOLD + 0.08
-        samples = np.full(320, int(level * 30000), dtype=np.int16)
+        samples = np.full(FRAME_SAMPLES, int(level * 30000), dtype=np.int16)
         return samples.tobytes()
 
     async def test_muted_playback_frames_not_sent_to_stt(self) -> None:
@@ -96,8 +97,8 @@ class TestSttMute(unittest.IsolatedAsyncioTestCase):
         session._stt_muted = True
         session._barge_in.arm()
         session.speech_session.push_audio = MagicMock()
-        quiet = np.zeros(320, dtype=np.int16).tobytes()
-        for _ in range(BARGE_IN_SUSTAINED_FRAMES + 3):
+        quiet = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
+        for _ in range(BARGE_IN_VOICED_WINDOW + 3):
             await session.handle_audio_frame(quiet)
         session.speech_session.push_audio.assert_not_called()
 
@@ -108,11 +109,56 @@ class TestSttMute(unittest.IsolatedAsyncioTestCase):
         session._barge_in.arm()
         session.speech_session.push_audio = MagicMock()
         frame = self._loud_pcm_bytes()
+        side_effect = [False] * (BARGE_IN_VOICED_WINDOW - 1) + [True]
         with patch.object(session, "handle_barge_in", new_callable=AsyncMock) as barge:
-            for _ in range(BARGE_IN_SUSTAINED_FRAMES):
-                await session.handle_audio_frame(frame)
+            with patch.object(
+                session._barge_in, "register_frame", side_effect=side_effect
+            ):
+                for _ in range(BARGE_IN_VOICED_WINDOW):
+                    await session.handle_audio_frame(frame)
         barge.assert_awaited_once()
         session.speech_session.push_audio.assert_not_called()
+
+    async def test_discard_mode_blocks_stt_until_silence(self) -> None:
+        session = self._session()
+        session._speech_ready = True
+        session._discard_interrupt_audio = True
+        session._stt_muted = True
+        session._barge_in.enter_discard_mode()
+        session.speech_session.push_audio = MagicMock()
+        pcm = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
+        with patch.object(
+            session._barge_in, "register_discard_frame", return_value=False
+        ):
+            await session.handle_audio_frame(pcm)
+        session.speech_session.push_audio.assert_not_called()
+        self.assertTrue(session._discard_interrupt_audio)
+
+        with patch.object(
+            session._barge_in, "register_discard_frame", return_value=True
+        ):
+            await session.handle_audio_frame(pcm)
+        self.assertFalse(session._discard_interrupt_audio)
+        self.assertFalse(session._stt_muted)
+
+    async def test_final_not_launched_while_discarding(self) -> None:
+        session = self._session()
+        session._stt_muted = True
+        session._discard_interrupt_audio = True
+        with patch.object(session, "launch_turn") as launch_turn:
+            await session._on_speech_final(
+                "Stop talking and explain quantum physics"
+            )
+        launch_turn.assert_not_called()
+
+    async def test_barge_in_deduped_within_cooldown(self) -> None:
+        session = self._session()
+        session._last_barge_in_handled_at = time.monotonic()
+        with patch.object(session, "cancel_active_task", new_callable=AsyncMock) as cancel:
+            with patch.object(session, "send_json", new_callable=AsyncMock) as send_json:
+                await session.handle_barge_in()
+        cancel.assert_not_awaited()
+        send_json.assert_not_awaited()
 
     async def test_playback_idle_disarms_barge_in(self) -> None:
         session = self._session()

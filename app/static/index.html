@@ -166,13 +166,8 @@
   <script>
     const TARGET_RATE = 16000;
     const SEND_SAMPLES = 320; // 20 ms at 16 kHz
-    const PROCESSOR_SIZE = 4096; // must be 256|512|1024|2048|4096|8192|16384
+    const PROCESSOR_SIZE = 1024; // must be 256|512|1024|2048|4096|8192|16384
     const SPEECH_RMS_THRESHOLD = 0.02;
-    const BARGE_IN_PLAYBACK_RMS = 0.04;
-    const BARGE_IN_FLOOR_RATIO = 2.2;
-    const BARGE_IN_SUSTAINED_BLOCKS = 3;
-    const BARGE_IN_FLOOR_DECAY = 0.35;
-    const BARGE_IN_FLOOR_RISE = 0.004;
     const ECHO_TAIL_MS = 800;
     const MIC_GAIN = 3.0;
 
@@ -207,11 +202,9 @@
     let isPlaying = false;
     let inEchoTail = false;
     let echoTailTimer = null;
-    let playbackBargeInLoudBlocks = 0;
     let agentPlaybackActive = false;
     let agentAudioStreamComplete = false;
     let pendingPlaybackIdleEpoch = null;
-    let playbackNoiseFloor = 0;
     let liveCaptionEl = null;
     let liveAgentCaptionEl = null;
     let pendingAgentCaption = null;
@@ -504,22 +497,7 @@
       agentPlaybackActive = false;
       agentAudioStreamComplete = false;
       pendingPlaybackIdleEpoch = null;
-      playbackNoiseFloor = 0;
-      playbackBargeInLoudBlocks = 0;
       pendingAgentCaption = null;
-    }
-
-    function updatePlaybackNoiseFloor(rms) {
-      if (playbackNoiseFloor <= 0) {
-        playbackNoiseFloor = rms;
-        return;
-      }
-      if (rms <= playbackNoiseFloor) {
-        playbackNoiseFloor =
-          playbackNoiseFloor * (1 - BARGE_IN_FLOOR_DECAY) + rms * BARGE_IN_FLOOR_DECAY;
-      } else {
-        playbackNoiseFloor += (rms - playbackNoiseFloor) * BARGE_IN_FLOOR_RISE;
-      }
     }
 
     function flushPendingSamples() {
@@ -529,41 +507,9 @@
       flushMicChunks();
     }
 
-    function triggerClientBargeIn() {
-      handleBargeIn();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'barge_in' }));
-      }
-    }
-
-    function bargeInThreshold() {
-      const floorBoost = playbackNoiseFloor * BARGE_IN_FLOOR_RATIO;
-      return Math.max(BARGE_IN_PLAYBACK_RMS, floorBoost);
-    }
-
-    function maybeClientBargeIn(rms) {
-      if (!agentAudible()) {
-        playbackBargeInLoudBlocks = 0;
-        playbackNoiseFloor = playbackNoiseFloor * 0.95;
-        return;
-      }
-      updatePlaybackNoiseFloor(rms);
-      const threshold = bargeInThreshold();
-      if (rms > threshold) {
-        playbackBargeInLoudBlocks += 1;
-        if (playbackBargeInLoudBlocks >= BARGE_IN_SUSTAINED_BLOCKS) {
-          playbackBargeInLoudBlocks = 0;
-          triggerClientBargeIn();
-        }
-      } else {
-        playbackBargeInLoudBlocks = 0;
-      }
-    }
-
     function handleBargeIn() {
       cancelEchoTail();
       clearAgentWordRevealTimer();
-      const partialAgent = agentRevealedText.trim();
       stashedAgentFinalText = null;
       agentRevealedText = '';
       clearLiveAgentCaption();
@@ -576,9 +522,6 @@
       }
       playbackQueue.length = 0;
       isPlaying = false;
-      if (partialAgent) {
-        addTranscript('agent', partialAgent);
-      }
       clearLiveCaption();
       setStatus('Listening (barge-in)', 'connected');
     }
@@ -911,7 +854,6 @@
         if (!running || !speechReady || !ws || ws.readyState !== WebSocket.OPEN) return;
         const input = e.inputBuffer.getChannelData(0);
         const rms = computeRms(input);
-        maybeClientBargeIn(rms);
         const atTarget = resampleStateful(input, nativeRate, TARGET_RATE);
         pendingSamples = concatFloat32(pendingSamples, atTarget);
         if (agentAudible()) {

@@ -90,6 +90,8 @@ class VoiceSession:
         self._speculative_user_text: str | None = None
         self._turn_started_at: float = 0.0
         self._logged_first_audio_for_turn: int | None = None
+        self._last_barge_in_handled_at: float = 0.0
+        self._discard_interrupt_audio: bool = False
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -182,13 +184,17 @@ class VoiceSession:
         )
 
     async def handle_barge_in(self) -> None:
+        now = time.monotonic()
+        if now - self._last_barge_in_handled_at < 0.45:
+            return
+        self._last_barge_in_handled_at = now
         self._agent_audio_open = False
         self._latest_partial_text = ""
-        self._barge_in.disarm()
+        self._recent_agent_text = None
+        self._discard_interrupt_audio = True
+        self._barge_in.enter_discard_mode()
         self._stt_muted = True
         self._flush_stt_silence()
-        self._stt_muted = False
-        self._stt_ignore_finals_until = time.monotonic() + 0.25
         self.turn_id += 1
         await self.cancel_active_task(rollback_speculative=True)
         await self.send_json({"type": "barge_in"})
@@ -362,6 +368,7 @@ class VoiceSession:
     ) -> None:
         self.ai_busy = True
         self._barge_in.reset_for_turn()
+        self._barge_in.arm()
         logger.info(
             "turn_id=%s agent turn started speculative=%s tts=%s voice=%s speed=%s",
             turn_id,
@@ -512,7 +519,16 @@ class VoiceSession:
             )
             self._last_audio_log_at = now
 
-        if self._barge_in.armed and self._barge_in.register_frame(frame):
+        if self._discard_interrupt_audio:
+            if self._barge_in.register_discard_frame(pcm_bytes):
+                self._discard_interrupt_audio = False
+                self._flush_stt_silence()
+                self._stt_muted = False
+                self._stt_ignore_finals_until = time.monotonic() + 0.35
+                logger.info("interrupt utterance discarded; STT listening again")
+            return
+
+        if self._barge_in.armed and self._barge_in.register_frame(pcm_bytes):
             logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()
             return

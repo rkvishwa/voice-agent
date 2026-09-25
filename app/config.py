@@ -80,9 +80,16 @@ RMS_SPEECH_START_THRESHOLD: float = float(os.getenv("RMS_SPEECH_START_THRESHOLD"
 RMS_BARGE_IN_PLAYBACK_THRESHOLD: float = float(
     os.getenv("RMS_BARGE_IN_PLAYBACK_THRESHOLD", "0.022")
 )
-BARGE_IN_SUSTAINED_FRAMES: int = int(os.getenv("BARGE_IN_SUSTAINED_FRAMES", "10"))
+BARGE_IN_SUSTAINED_FRAMES: int = int(os.getenv("BARGE_IN_SUSTAINED_FRAMES", "6"))
+BARGE_IN_VAD_MODE: int = min(3, max(0, int(os.getenv("BARGE_IN_VAD_MODE", "2"))))
+BARGE_IN_VOICED_WINDOW: int = int(os.getenv("BARGE_IN_VOICED_WINDOW", "10"))
+BARGE_IN_VOICED_MIN: int = int(os.getenv("BARGE_IN_VOICED_MIN", "6"))
+# Non-speech frames after barge-in before accepting a new user turn (~600 ms at 20 ms).
+BARGE_IN_POST_INTERRUPT_SILENCE_FRAMES: int = int(
+    os.getenv("BARGE_IN_POST_INTERRUPT_SILENCE_FRAMES", "30")
+)
 
 # Azure STT end-of-utterance silence before a final transcript (ms).
-STT_SEGMENTATION_SILENCE_MS: int = int(os.getenv("STT_SEGMENTATION_SILENCE_MS", "400"))
+STT_SEGMENTATION_SILENCE_MS: int = int(os.getenv("STT_SEGMENTATION_SILENCE_MS", "800"))
 # Local RMS silence after a partial before speculative LLM start (ms).
 SPECULATIVE_SILENCE_MS: int = int(os.getenv("SPECULATIVE_SILENCE_MS", "200"))

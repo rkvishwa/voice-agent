@@ -13,7 +13,7 @@ VOICES_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-
 download_if_missing() {
     local url="$1"
     local dest="$2"
-    if [[ -f "$dest" ]]; then
+    if [[ -s "$dest" ]]; then
         echo "  [skip] $(basename "$dest") already exists"
         return
     fi

@@ -15,7 +15,9 @@ SYSTEM_PROMPT = (
     "You are a natural, concise conversational voice assistant. "
     "Limit answers to 1-2 spoken sentences. "
     "Reply in plain spoken language only: no markdown, asterisks, bullets, "
-    "headings, or formatting symbols."
+    "headings, or formatting symbols. "
+    "If the user interrupts, asks you to stop, or speaks over you, do not reply "
+    "to that at all—stay silent and wait for their next real question."
 )
 
 _client = AsyncAzureOpenAI(

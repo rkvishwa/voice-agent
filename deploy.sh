@@ -130,12 +130,7 @@ pip install -r requirements.txt -q
 echo "==> Python dependencies installed"
 
 # ---------------------------------------------------------------------------
-# 6. Download Kokoro TTS models
-# ---------------------------------------------------------------------------
-bash scripts/download_models.sh
-
-# ---------------------------------------------------------------------------
-# 7. Systemd install (root) or foreground start (user)
+# 6. Systemd install (root) or foreground start (user)
 # ---------------------------------------------------------------------------
 if $IS_ROOT; then
     echo "==> Installing to $INSTALL_DIR"
@@ -143,6 +138,7 @@ if $IS_ROOT; then
     rsync -a --delete \
         --exclude venv \
         --exclude .git \
+        --exclude models \
         --exclude '__pycache__' \
         "$SCRIPT_DIR/" "$INSTALL_DIR/"
 
@@ -155,6 +151,7 @@ if $IS_ROOT; then
     cp "$SCRIPT_DIR/.env" "$INSTALL_DIR/.env"
     sed -i "s|^MODELS_DIR=.*|MODELS_DIR=$INSTALL_DIR/models|" "$INSTALL_DIR/.env"
 
+    echo "==> Kokoro TTS models"
     MODELS_DIR="$INSTALL_DIR/models" bash "$INSTALL_DIR/scripts/download_models.sh"
 
     bash "$INSTALL_DIR/scripts/setup_systemd.sh"
@@ -164,6 +161,8 @@ if $IS_ROOT; then
     echo "    sudo DOMAIN=voice.metl.run CERTBOT_EMAIL=you@example.com $INSTALL_DIR/scripts/setup_nginx.sh"
 else
     chmod +x run.sh scripts/*.sh
+    echo "==> Kokoro TTS models"
+    bash scripts/download_models.sh
     echo ""
     echo "==> Deploy complete. Starting server in foreground ..."
     echo "    Open http://localhost:8000 in your browser"

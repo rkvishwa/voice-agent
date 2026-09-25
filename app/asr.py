@@ -110,6 +110,10 @@ class AzureSpeechSession:
             speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,
             str(STT_SEGMENTATION_SILENCE_MS),
         )
+        speech_config.set_property(
+            speechsdk.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
+            "1",
+        )
 
         stream_format = speechsdk.audio.AudioStreamFormat(
             samples_per_second=SAMPLE_RATE,

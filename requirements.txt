@@ -7,3 +7,4 @@ kokoro-onnx>=0.6.0
 soundfile>=0.12.0
 numpy>=2.0.0
 openai>=1.50.0
+webrtcvad-wheels>=2.0.14
