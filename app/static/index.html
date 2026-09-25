@@ -18,7 +18,49 @@
     }
     h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
     .subtitle { color: #9aa0a6; margin-bottom: 2rem; font-size: 0.9rem; }
-    .controls { display: flex; gap: 1rem; margin-bottom: 2rem; }
+    .controls { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; justify-content: center; }
+    .tts-panel {
+      width: 100%;
+      max-width: 640px;
+      background: #1e2128;
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .tts-panel label {
+      font-size: 0.75rem;
+      color: #9aa0a6;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+      display: block;
+    }
+    .tts-row { display: flex; flex-direction: column; gap: 0.25rem; }
+    .tts-panel select {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid #3c4043;
+      background: #0f1117;
+      color: #e8eaed;
+      font-size: 0.95rem;
+    }
+    .tts-panel select:disabled { opacity: 0.5; }
+    .tts-speed-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    #ttsSpeedValue { font-size: 0.85rem; color: #e8eaed; text-transform: none; letter-spacing: normal; }
+    .tts-panel input[type="range"] {
+      width: 100%;
+      accent-color: #1a73e8;
+    }
+    .tts-panel input[type="range"]:disabled { opacity: 0.5; }
+    #ttsHint { font-size: 0.8rem; color: #9aa0a6; min-height: 1.2em; }
     button {
       padding: 0.75rem 1.5rem;
       border: none;
@@ -85,6 +127,28 @@
   <h1>Voice Agent</h1>
   <p class="subtitle">Full-duplex voice assistant with barge-in</p>
 
+  <div class="tts-panel">
+    <div class="tts-row">
+      <label for="ttsEngineSelect">Speech engine</label>
+      <select id="ttsEngineSelect">
+        <option value="kokoro">Local Kokoro</option>
+        <option value="azure">Azure Speech</option>
+      </select>
+    </div>
+    <div class="tts-row">
+      <label for="ttsVoiceSelect">Voice</label>
+      <select id="ttsVoiceSelect"></select>
+    </div>
+    <div class="tts-row">
+      <div class="tts-speed-header">
+        <label for="ttsSpeedSlider">Speed</label>
+        <span id="ttsSpeedValue">1.05×</span>
+      </div>
+      <input id="ttsSpeedSlider" type="range" min="0.75" max="1.5" step="0.05" value="1.05" />
+    </div>
+    <div id="ttsHint"></div>
+  </div>
+
   <div class="controls">
     <button id="startBtn" type="button">Start</button>
     <button id="stopBtn" type="button" disabled>Stop</button>
@@ -100,10 +164,19 @@
     const SPEECH_RMS_THRESHOLD = 0.02;
     const MIC_GAIN = 3.0;
 
+    const TTS_STORAGE_KEY = 'voice-agent-tts-v1';
+
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const statusEl = document.getElementById('status');
     const transcriptEl = document.getElementById('transcript');
+    const ttsEngineSelect = document.getElementById('ttsEngineSelect');
+    const ttsVoiceSelect = document.getElementById('ttsVoiceSelect');
+    const ttsSpeedSlider = document.getElementById('ttsSpeedSlider');
+    const ttsSpeedValue = document.getElementById('ttsSpeedValue');
+    const ttsHintEl = document.getElementById('ttsHint');
+
+    let ttsCatalog = null;
 
     let ws = null;
     let micContext = null;
@@ -316,6 +389,147 @@
       playNext();
     }
 
+    function loadTtsPrefs() {
+      try {
+        return JSON.parse(localStorage.getItem(TTS_STORAGE_KEY) || '{}');
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function saveTtsPrefs(backend, voice, speed) {
+      localStorage.setItem(
+        TTS_STORAGE_KEY,
+        JSON.stringify({ backend, voice, speed }),
+      );
+    }
+
+    function formatSpeed(speed) {
+      return `${Number(speed).toFixed(2)}×`;
+    }
+
+    function updateSpeedLabel() {
+      ttsSpeedValue.textContent = formatSpeed(ttsSpeedSlider.value);
+    }
+
+    function currentTtsSelection() {
+      return {
+        backend: ttsEngineSelect.value,
+        voice: ttsVoiceSelect.value,
+        speed: parseFloat(ttsSpeedSlider.value),
+      };
+    }
+
+    function populateVoiceSelect(backend) {
+      const engine = ttsCatalog?.engines?.[backend];
+      ttsVoiceSelect.innerHTML = '';
+      if (!engine || !engine.voices?.length) {
+        ttsVoiceSelect.disabled = true;
+        ttsHintEl.textContent = engine?.error || 'No voices available for this engine.';
+        return;
+      }
+      ttsVoiceSelect.disabled = running;
+      ttsHintEl.textContent = engine.error || '';
+      for (const v of engine.voices) {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.label || v.id;
+        ttsVoiceSelect.appendChild(opt);
+      }
+    }
+
+    function applyTtsSelection(backend, voice) {
+      if (!ttsCatalog) return;
+      const engines = ttsCatalog.engines;
+      let chosenBackend = backend;
+      if (!engines[chosenBackend]?.available) {
+        chosenBackend = engines.kokoro?.available ? 'kokoro' : 'azure';
+      }
+      ttsEngineSelect.value = chosenBackend;
+      ttsEngineSelect.querySelector('option[value="kokoro"]').disabled = !engines.kokoro?.available;
+      ttsEngineSelect.querySelector('option[value="azure"]').disabled = !engines.azure?.available;
+      populateVoiceSelect(chosenBackend);
+      const voices = engines[chosenBackend]?.voices || [];
+      const ids = voices.map(v => v.id);
+      let chosenVoice = voice;
+      if (!ids.includes(chosenVoice)) {
+        chosenVoice = ttsCatalog.default_voices?.[chosenBackend] || ids[0];
+      }
+      if (chosenVoice) {
+        ttsVoiceSelect.value = chosenVoice;
+      }
+      saveTtsPrefs(chosenBackend, ttsVoiceSelect.value, ttsSpeedSlider.value);
+    }
+
+    function applySpeedFromCatalog(speed) {
+      const min = ttsCatalog?.speed_min ?? 0.75;
+      const max = ttsCatalog?.speed_max ?? 1.5;
+      const step = ttsCatalog?.speed_step ?? 0.05;
+      const fallback = ttsCatalog?.default_speed ?? 1.05;
+      let chosen = parseFloat(speed);
+      if (Number.isNaN(chosen)) {
+        chosen = fallback;
+      }
+      chosen = Math.min(max, Math.max(min, chosen));
+      ttsSpeedSlider.min = String(min);
+      ttsSpeedSlider.max = String(max);
+      ttsSpeedSlider.step = String(step);
+      ttsSpeedSlider.value = String(chosen);
+      updateSpeedLabel();
+    }
+
+    function sendTtsConfig() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const { backend, voice, speed } = currentTtsSelection();
+      ws.send(JSON.stringify({ type: 'tts_config', backend, voice, speed }));
+    }
+
+    function setTtsControlsDisabled(disabled) {
+      ttsEngineSelect.disabled = disabled;
+      const engine = ttsCatalog?.engines?.[ttsEngineSelect.value];
+      ttsVoiceSelect.disabled = disabled || !engine?.voices?.length;
+      ttsSpeedSlider.disabled = disabled;
+    }
+
+    async function initTtsPanel() {
+      const res = await fetch('/api/tts');
+      if (!res.ok) {
+        ttsHintEl.textContent = 'Could not load TTS options.';
+        return;
+      }
+      ttsCatalog = await res.json();
+      const prefs = loadTtsPrefs();
+      const backend = prefs.backend || ttsCatalog.default_backend;
+      const voice = prefs.voice || ttsCatalog.default_voices?.[backend];
+      const speed = prefs.speed ?? ttsCatalog.default_speed;
+      applyTtsSelection(backend, voice);
+      applySpeedFromCatalog(speed);
+    }
+
+    ttsEngineSelect.addEventListener('change', () => {
+      const backend = ttsEngineSelect.value;
+      populateVoiceSelect(backend);
+      const voices = ttsCatalog?.engines?.[backend]?.voices || [];
+      if (voices.length) {
+        ttsVoiceSelect.value = voices[0].id;
+      }
+      saveTtsPrefs(backend, ttsVoiceSelect.value, ttsSpeedSlider.value);
+    });
+
+    ttsVoiceSelect.addEventListener('change', () => {
+      saveTtsPrefs(ttsEngineSelect.value, ttsVoiceSelect.value, ttsSpeedSlider.value);
+    });
+
+    ttsSpeedSlider.addEventListener('input', () => {
+      updateSpeedLabel();
+      saveTtsPrefs(ttsEngineSelect.value, ttsVoiceSelect.value, ttsSpeedSlider.value);
+    });
+
+    initTtsPanel().catch(err => {
+      console.error(err);
+      ttsHintEl.textContent = 'Could not load TTS options.';
+    });
+
     function connectWebSocket() {
       return new Promise((resolve, reject) => {
         speechReady = false;
@@ -327,6 +541,7 @@
 
         ws.onopen = () => {
           setStatus('Connecting to speech service…');
+          sendTtsConfig();
         };
 
         ws.onmessage = (event) => {
@@ -386,6 +601,7 @@
       startupFailed = false;
       startBtn.disabled = true;
       stopBtn.disabled = false;
+      setTtsControlsDisabled(true);
       transcriptEl.innerHTML = '';
       clearLiveCaption();
       pendingSamples = new Float32Array(0);
@@ -438,6 +654,7 @@
       speechReady = false;
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      setTtsControlsDisabled(false);
       pendingSamples = new Float32Array(0);
       resamplePhase = 0;
 

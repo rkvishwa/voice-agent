@@ -1,6 +1,7 @@
 """FastAPI WebSocket orchestration for the voice agent."""
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -19,7 +20,13 @@ from app.asr import (
     build_startup_error_event,
 )
 from app.barge_in import BargeInGate
-from app.config import AZURE_SPEECH_LANGUAGE, AZURE_SPEECH_REGION
+from app.config import AZURE_SPEECH_LANGUAGE, AZURE_SPEECH_REGION, TTS_BACKEND, TTS_SPEED
+from app.tts import (
+    TtsBackend,
+    default_voice_for_backend,
+    get_tts_catalog,
+    validate_tts_config,
+)
 from app.vad import amplify_pcm16, compute_rms, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +44,11 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/tts")
+async def tts_catalog():
+    return get_tts_catalog()
+
+
 class VoiceSession:
     """Per-connection state for Azure Speech streaming and barge-in."""
 
@@ -51,6 +63,12 @@ class VoiceSession:
         self._frames_received = 0
         self._last_audio_log_at = 0.0
         self._barge_in = BargeInGate()
+        default_backend: TtsBackend = (
+            TTS_BACKEND if TTS_BACKEND in ("kokoro", "azure") else "kokoro"
+        )
+        self.tts_backend: TtsBackend = default_backend
+        self.tts_voice: str = default_voice_for_backend(default_backend)
+        self.tts_speed: float = TTS_SPEED
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -91,6 +109,22 @@ class VoiceSession:
         await self.cancel_active_task()
         await self.send_json({"type": "barge_in"})
 
+    def apply_tts_config(
+        self,
+        backend: str,
+        voice: str,
+        speed: float | str | int | None = None,
+    ) -> None:
+        self.tts_backend, self.tts_voice, self.tts_speed = validate_tts_config(
+            backend, voice, speed
+        )
+        logger.info(
+            "TTS config backend=%s voice=%s speed=%s",
+            self.tts_backend,
+            self.tts_voice,
+            self.tts_speed,
+        )
+
     async def _on_speech_partial(self, text: str) -> None:
         if self._closed:
             return
@@ -124,7 +158,13 @@ class VoiceSession:
     async def process_turn(self, user_text: str, turn_id: int) -> None:
         self.ai_busy = True
         self._barge_in.reset_for_turn()
-        logger.info("turn_id=%s agent turn started", turn_id)
+        logger.info(
+            "turn_id=%s agent turn started tts=%s voice=%s speed=%s",
+            turn_id,
+            self.tts_backend,
+            self.tts_voice,
+            self.tts_speed,
+        )
         try:
             if turn_id != self.turn_id:
                 return
@@ -147,13 +187,23 @@ class VoiceSession:
                     clause_buffer = clause_buffer[end:]
                     if clause:
                         agent_text_parts.append(clause)
-                        wav = await tts.synth_chunk(clause)
+                        wav = await tts.synth_chunk(
+                            clause,
+                            self.tts_backend,
+                            self.tts_voice,
+                            self.tts_speed,
+                        )
                         await self._send_agent_audio(wav, turn_id)
 
             remainder = clause_buffer.strip()
             if remainder:
                 agent_text_parts.append(remainder)
-                wav = await tts.synth_chunk(remainder)
+                wav = await tts.synth_chunk(
+                    remainder,
+                    self.tts_backend,
+                    self.tts_voice,
+                    self.tts_speed,
+                )
                 await self._send_agent_audio(wav, turn_id)
 
             agent_text = " ".join(agent_text_parts).strip()
@@ -242,7 +292,21 @@ async def websocket_endpoint(websocket: WebSocket):
             if "bytes" in message and message["bytes"] is not None:
                 await session.handle_audio_frame(message["bytes"])
             elif "text" in message and message["text"] is not None:
-                pass
+                try:
+                    payload = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "tts_config":
+                    try:
+                        session.apply_tts_config(
+                            payload.get("backend", ""),
+                            payload.get("voice", ""),
+                            payload.get("speed"),
+                        )
+                    except ValueError as exc:
+                        await session.send_json(
+                            {"type": "error", "message": str(exc)}
+                        )
 
     except WebSocketDisconnect:
         pass

@@ -1,26 +1,46 @@
-"""Local Kokoro-82M ONNX text-to-speech."""
+"""Text-to-speech: local Kokoro or Azure Speech neural voices."""
 
 import asyncio
 import inspect
 import io
 import logging
-from typing import Optional
+from typing import Any, Literal, Optional
 
+import azure.cognitiveservices.speech as speechsdk
 import soundfile as sf
+from azure.cognitiveservices.speech import ResultReason
 from kokoro_onnx import Kokoro
 
 from app.config import (
+    AZURE_SPEECH_KEY,
+    AZURE_SPEECH_REGION,
+    AZURE_SPEECH_VOICE,
     KOKORO_MODEL_PATH,
-    KOKORO_SPEED,
     KOKORO_VOICE,
     KOKORO_VOICES_PATH,
+    TTS_BACKEND,
+    TTS_SPEED,
 )
 
 logger = logging.getLogger(__name__)
 
+TtsBackend = Literal["kokoro", "azure"]
+
+TTS_SPEED_MIN = 0.75
+TTS_SPEED_MAX = 1.5
+TTS_SPEED_STEP = 0.05
+
+AZURE_TTS_VOICES: list[dict[str, str]] = [
+    {"id": "en-US-AvaMultilingualNeural", "label": "Ava (US, multilingual)"},
+    {"id": "en-US-AndrewMultilingualNeural", "label": "Andrew (US, multilingual)"},
+    {"id": "en-US-JennyNeural", "label": "Jenny (US)"},
+    {"id": "en-US-GuyNeural", "label": "Guy (US)"},
+    {"id": "en-GB-SoniaNeural", "label": "Sonia (UK)"},
+    {"id": "en-GB-RyanNeural", "label": "Ryan (UK)"},
+]
+
 _kokoro: Optional[Kokoro] = None
-_voice: Optional[str] = None
-_create_kwargs: dict = {}
+_kokoro_create_kwargs: dict = {}
 
 
 def pick_kokoro_voice(preferred: tuple[str, ...], available: set[str]) -> str:
@@ -33,8 +53,165 @@ def pick_kokoro_voice(preferred: tuple[str, ...], available: set[str]) -> str:
     return sorted(available)[0]
 
 
+def azure_voice_ids() -> set[str]:
+    return {v["id"] for v in AZURE_TTS_VOICES}
+
+
+def default_voice_for_backend(backend: TtsBackend) -> str:
+    if backend == "azure":
+        if AZURE_SPEECH_VOICE in azure_voice_ids():
+            return AZURE_SPEECH_VOICE
+        return AZURE_TTS_VOICES[0]["id"]
+    if KOKORO_VOICE:
+        return KOKORO_VOICE
+    return "af_heart"
+
+
+def list_kokoro_voices() -> tuple[list[dict[str, str]], Optional[str]]:
+    """Return Kokoro voice options and an error if models are missing."""
+    if not KOKORO_MODEL_PATH.is_file() or not KOKORO_VOICES_PATH.is_file():
+        return [], (
+            f"Kokoro models not found under {KOKORO_MODEL_PATH.parent}. "
+            "Run scripts/download_models.sh."
+        )
+    try:
+        kokoro = Kokoro(str(KOKORO_MODEL_PATH), str(KOKORO_VOICES_PATH))
+        voices = [
+            {"id": name, "label": name}
+            for name in sorted(kokoro.get_voices())
+        ]
+        return voices, None
+    except Exception as exc:
+        return [], str(exc)
+
+
+def get_tts_catalog() -> dict:
+    """Build payload for GET /api/tts."""
+    backend = TTS_BACKEND if TTS_BACKEND in ("kokoro", "azure") else "kokoro"
+    kokoro_voices, kokoro_error = list_kokoro_voices()
+    default_kokoro = default_voice_for_backend("kokoro")
+    if kokoro_voices and default_kokoro not in {v["id"] for v in kokoro_voices}:
+        default_kokoro = kokoro_voices[0]["id"]
+
+    default_speed = validate_speed(TTS_SPEED)
+
+    return {
+        "default_backend": backend,
+        "default_speed": default_speed,
+        "speed_min": TTS_SPEED_MIN,
+        "speed_max": TTS_SPEED_MAX,
+        "speed_step": TTS_SPEED_STEP,
+        "default_voices": {
+            "kokoro": default_kokoro,
+            "azure": default_voice_for_backend("azure"),
+        },
+        "engines": {
+            "kokoro": {
+                "label": "Local Kokoro",
+                "voices": kokoro_voices,
+                "error": kokoro_error,
+                "available": bool(kokoro_voices),
+            },
+            "azure": {
+                "label": "Azure Speech",
+                "voices": AZURE_TTS_VOICES,
+                "error": None,
+                "available": True,
+            },
+        },
+    }
+
+
+def validate_speed(speed: float | str | int) -> float:
+    """Validate speaking rate multiplier (1.0 = normal)."""
+    try:
+        value = float(speed)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid TTS speed: {speed}") from None
+    if value < TTS_SPEED_MIN or value > TTS_SPEED_MAX:
+        raise ValueError(
+            f"TTS speed must be between {TTS_SPEED_MIN} and {TTS_SPEED_MAX} "
+            f"(got {value})"
+        )
+    return round(value, 2)
+
+
+def escape_ssml_text(text: str) -> str:
+    """Escape text for safe inclusion in SSML."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def azure_prosody_rate(speed: float) -> str:
+    """Map speed multiplier to Azure prosody rate (1.0 -> 0%)."""
+    percent = int(round((speed - 1.0) * 100))
+    if percent > 0:
+        return f"+{percent}%"
+    if percent < 0:
+        return f"{percent}%"
+    return "0%"
+
+
+def build_azure_ssml(text: str, voice: str, speed: float) -> str:
+    rate = azure_prosody_rate(speed)
+    escaped = escape_ssml_text(text)
+    return (
+        '<speak version="1.0" xml:lang="en-US" '
+        'xmlns="http://www.w3.org/2001/10/synthesis">'
+        f'<voice name="{voice}"><prosody rate="{rate}">{escaped}</prosody></voice>'
+        "</speak>"
+    )
+
+
+def validate_tts_config(
+    backend: str,
+    voice: str,
+    speed: float | str | int | None = None,
+) -> tuple[TtsBackend, str, float]:
+    """Validate backend, voice, and speed; return normalized triple."""
+    if backend not in ("kokoro", "azure"):
+        raise ValueError(f"Unknown TTS backend: {backend}")
+
+    normalized_speed = validate_speed(speed if speed is not None else TTS_SPEED)
+
+    if backend == "azure":
+        if voice not in azure_voice_ids():
+            raise ValueError(f"Unknown Azure TTS voice: {voice}")
+        return "azure", voice, normalized_speed
+
+    kokoro_voices, error = list_kokoro_voices()
+    if error or not kokoro_voices:
+        raise ValueError(error or "Kokoro TTS is not available")
+    allowed = {v["id"] for v in kokoro_voices}
+    if voice not in allowed:
+        raise ValueError(f"Unknown Kokoro voice: {voice}")
+    return "kokoro", voice, normalized_speed
+
+
+def audio_from_synthesis_result(result: Any) -> bytes:
+    """Extract WAV bytes from a Speech SDK synthesis result or raise with details."""
+    if result.reason == ResultReason.SynthesizingAudioCompleted:
+        audio = result.audio_data
+        if not audio:
+            raise RuntimeError("Azure Speech TTS returned empty audio")
+        return bytes(audio)
+
+    if result.reason == ResultReason.Canceled:
+        details = result.cancellation_details
+        if details is not None:
+            message = details.error_details or str(details.reason)
+        else:
+            message = "unknown cancellation"
+        raise RuntimeError(f"Azure Speech TTS canceled: {message}")
+
+    raise RuntimeError(f"Azure Speech TTS failed: {result.reason}")
+
+
 def _init_kokoro() -> Kokoro:
-    global _kokoro, _voice, _create_kwargs
+    global _kokoro, _kokoro_create_kwargs
 
     if _kokoro is not None:
         return _kokoro
@@ -51,42 +228,69 @@ def _init_kokoro() -> Kokoro:
         )
 
     _kokoro = Kokoro(str(KOKORO_MODEL_PATH), str(KOKORO_VOICES_PATH))
-    available = set(_kokoro.get_voices())
-
-    if KOKORO_VOICE:
-        if KOKORO_VOICE not in available:
-            raise RuntimeError(
-                f"KOKORO_VOICE={KOKORO_VOICE!r} not in voices.bin "
-                f"(available: {', '.join(sorted(available)[:12])}…)"
-            )
-        _voice = KOKORO_VOICE
-    else:
-        _voice = pick_kokoro_voice(("af_heart", "af_bella", "am_adam"), available)
-
     sig = inspect.signature(_kokoro.create)
     if "lang" in sig.parameters:
-        _create_kwargs["lang"] = "en-us"
+        _kokoro_create_kwargs["lang"] = "en-us"
 
-    logger.info("Kokoro TTS voice=%s speed=%s", _voice, KOKORO_SPEED)
+    logger.info("Kokoro TTS model loaded from %s", KOKORO_MODEL_PATH)
     return _kokoro
 
 
-def _synth_sync(text: str) -> bytes:
+def _synth_kokoro_sync(text: str, voice: str, speed: float) -> bytes:
     kokoro = _init_kokoro()
+    available = set(kokoro.get_voices())
+    if voice not in available:
+        raise RuntimeError(f"Kokoro voice {voice!r} not in voices.bin")
     samples, sample_rate = kokoro.create(
         text,
-        voice=_voice,
-        speed=KOKORO_SPEED,
-        **_create_kwargs,
+        voice=voice,
+        speed=speed,
+        **_kokoro_create_kwargs,
     )
     buffer = io.BytesIO()
     sf.write(buffer, samples, sample_rate, format="WAV")
     return buffer.getvalue()
 
 
-async def synth_chunk(text: str) -> bytes:
+def _synth_azure_sync(text: str, voice: str, speed: float) -> bytes:
+    if voice not in azure_voice_ids():
+        raise RuntimeError(f"Azure TTS voice not allowed: {voice}")
+
+    speech_config = speechsdk.SpeechConfig(
+        subscription=AZURE_SPEECH_KEY,
+        region=AZURE_SPEECH_REGION,
+    )
+    speech_config.speech_synthesis_voice_name = voice
+    speech_config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
+    )
+
+    synthesizer = speechsdk.SpeechSynthesizer(
+        speech_config=speech_config,
+        audio_config=None,
+    )
+    ssml = build_azure_ssml(text, voice, speed)
+    result = synthesizer.speak_ssml_async(ssml).get()
+    return audio_from_synthesis_result(result)
+
+
+def _synth_sync(text: str, backend: TtsBackend, voice: str, speed: float) -> bytes:
+    if backend == "kokoro":
+        return _synth_kokoro_sync(text, voice, speed)
+    return _synth_azure_sync(text, voice, speed)
+
+
+async def synth_chunk(
+    text: str,
+    backend: TtsBackend,
+    voice: str,
+    speed: float,
+) -> bytes:
     """Synthesize text into in-memory WAV bytes."""
     cleaned = text.strip()
     if not cleaned:
         return b""
-    return await asyncio.to_thread(_synth_sync, cleaned)
+    _, _, normalized_speed = validate_tts_config(backend, voice, speed)
+    return await asyncio.to_thread(
+        _synth_sync, cleaned, backend, voice, normalized_speed
+    )

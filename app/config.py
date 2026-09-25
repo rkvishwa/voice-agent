@@ -46,6 +46,9 @@ AZURE_OPENAI_API_VERSION: str = _optional("AZURE_OPENAI_API_VERSION", "2024-06-0
 AZURE_SPEECH_KEY: str = _require("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION: str = _require("AZURE_SPEECH_REGION").lower()
 AZURE_SPEECH_LANGUAGE: str = _optional("AZURE_SPEECH_LANGUAGE", "en-US")
+AZURE_SPEECH_VOICE: str = _optional(
+    "AZURE_SPEECH_VOICE", "en-US-AvaMultilingualNeural"
+)
 AZURE_SPEECH_PHRASES: list[str] = [
     phrase.strip()
     for phrase in _optional("AZURE_SPEECH_PHRASES", "").split(",")
@@ -60,6 +63,13 @@ KOKORO_MODEL_PATH: Path = MODELS_DIR / "kokoro-v0_19.onnx"
 KOKORO_VOICES_PATH: Path = MODELS_DIR / "voices.bin"
 KOKORO_VOICE: str = _optional("KOKORO_VOICE", "")
 KOKORO_SPEED: float = float(_optional("KOKORO_SPEED", "1.05"))
+_tts_speed_raw = _optional("TTS_SPEED", "")
+TTS_SPEED: float = (
+    float(_tts_speed_raw) if _tts_speed_raw else KOKORO_SPEED
+)
+
+_tts_backend_raw = _optional("TTS_BACKEND", "kokoro").lower()
+TTS_BACKEND: str = _tts_backend_raw if _tts_backend_raw in ("kokoro", "azure") else "kokoro"
 
 # Audio / barge-in VAD
 SAMPLE_RATE: int = 16000
