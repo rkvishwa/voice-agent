@@ -6,6 +6,8 @@ import re
 import time
 from pathlib import Path
 
+import numpy as np
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
@@ -157,14 +159,17 @@ class VoiceSession:
 
         now = time.monotonic()
         if now - self._last_audio_log_at >= 5.0:
+            boosted_frame = pcm16_to_float32(boosted)
             rms_in = compute_rms(frame)
-            rms_out = compute_rms(pcm16_to_float32(boosted))
+            rms_out = compute_rms(boosted_frame)
+            peak = float(np.max(np.abs(boosted_frame))) if boosted_frame.size else 0.0
             logger.info(
-                "audio ingress frames=%d bytes=%d rms_in=%.4f rms_out=%.4f",
+                "audio ingress frames=%d bytes=%d rms_in=%.4f rms_out=%.4f peak=%.4f",
                 self._frames_received,
                 len(pcm_bytes),
                 rms_in,
                 rms_out,
+                peak,
             )
             self._last_audio_log_at = now
 

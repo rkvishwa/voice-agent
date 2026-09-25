@@ -16,8 +16,16 @@ _REQUIRED_VARS = (
 )
 
 
+def _clean(value: str) -> str:
+    """Strip whitespace and inline comments accidentally copied into .env values."""
+    cleaned = value.strip()
+    if "#" in cleaned:
+        cleaned = cleaned.split("#", 1)[0].strip()
+    return cleaned
+
+
 def _require(name: str) -> str:
-    value = os.getenv(name, "").strip()
+    value = _clean(os.getenv(name, ""))
     if not value:
         raise RuntimeError(
             f"Missing required environment variable: {name}. "
@@ -26,17 +34,21 @@ def _require(name: str) -> str:
     return value
 
 
+def _optional(name: str, default: str = "") -> str:
+    return _clean(os.getenv(name, default))
+
+
 AZURE_OPENAI_ENDPOINT: str = _require("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY: str = _require("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT: str = _require("AZURE_OPENAI_DEPLOYMENT")
-AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01")
+AZURE_OPENAI_API_VERSION: str = _optional("AZURE_OPENAI_API_VERSION", "2024-06-01")
 
 AZURE_SPEECH_KEY: str = _require("AZURE_SPEECH_KEY")
-AZURE_SPEECH_REGION: str = _require("AZURE_SPEECH_REGION")
-AZURE_SPEECH_LANGUAGE: str = os.getenv("AZURE_SPEECH_LANGUAGE", "en-US")
+AZURE_SPEECH_REGION: str = _require("AZURE_SPEECH_REGION").lower()
+AZURE_SPEECH_LANGUAGE: str = _optional("AZURE_SPEECH_LANGUAGE", "en-US")
 AZURE_SPEECH_PHRASES: list[str] = [
     phrase.strip()
-    for phrase in os.getenv("AZURE_SPEECH_PHRASES", "").split(",")
+    for phrase in _optional("AZURE_SPEECH_PHRASES", "").split(",")
     if phrase.strip()
 ]
 

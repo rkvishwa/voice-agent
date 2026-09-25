@@ -65,7 +65,15 @@ class AzureSpeechSession:
     def _schedule(self, coro: Awaitable[None]) -> None:
         if self._closed:
             return
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+        def _log_error(fut: asyncio.Future) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.exception("Azure Speech callback failed")
+
+        future.add_done_callback(_log_error)
 
     def _start_sync(self) -> None:
         speech_config = speechsdk.SpeechConfig(
@@ -82,10 +90,10 @@ class AzureSpeechSession:
             "800",
         )
 
-        stream_format = speechsdk.audio.AudioStreamFormat(
-            samples_per_second=SAMPLE_RATE,
-            bits_per_sample=16,
-            channels=1,
+        stream_format = speechsdk.audio.AudioStreamFormat.get_wave_format_pcm(
+            SAMPLE_RATE,
+            16,
+            1,
         )
         self._push_stream = speechsdk.audio.PushAudioInputStream(stream_format)
         audio_config = speechsdk.audio.AudioConfig(stream=self._push_stream)
@@ -101,6 +109,9 @@ class AzureSpeechSession:
                 phrase_list.addPhrase(phrase)
 
         self._recognizer.session_started.connect(self._handle_session_started)
+        self._recognizer.session_stopped.connect(self._handle_session_stopped)
+        self._recognizer.speech_start_detected.connect(self._handle_speech_start)
+        self._recognizer.speech_end_detected.connect(self._handle_speech_end)
         self._recognizer.recognizing.connect(self._handle_recognizing)
         self._recognizer.recognized.connect(self._handle_recognized)
         self._recognizer.canceled.connect(self._handle_canceled)
@@ -124,6 +135,19 @@ class AzureSpeechSession:
 
     def _handle_session_started(self, evt: speechsdk.SessionEventArgs) -> None:
         logger.info("Azure Speech session_started id=%s", evt.session_id)
+
+    def _handle_session_stopped(self, evt: speechsdk.SessionEventArgs) -> None:
+        logger.info(
+            "Azure Speech session_stopped id=%s bytes_written=%d",
+            evt.session_id,
+            self._bytes_written,
+        )
+
+    def _handle_speech_start(self, evt: speechsdk.RecognitionEventArgs) -> None:
+        logger.info("Azure Speech VAD: speech_start offset=%s", evt.offset)
+
+    def _handle_speech_end(self, evt: speechsdk.RecognitionEventArgs) -> None:
+        logger.info("Azure Speech VAD: speech_end offset=%s", evt.offset)
 
     def _handle_recognizing(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
         if self._closed:

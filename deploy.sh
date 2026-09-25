@@ -42,6 +42,16 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     exit 1
 fi
 
+# Strip inline comments accidentally pasted into values (e.g. eastus # comment)
+AZURE_SPEECH_REGION="${AZURE_SPEECH_REGION%%#*}"
+AZURE_SPEECH_REGION="$(echo "$AZURE_SPEECH_REGION" | tr '[:upper:]' '[:lower:]' | xargs)"
+if ! [[ "$AZURE_SPEECH_REGION" =~ ^[a-z0-9-]+$ ]]; then
+    echo "ERROR: AZURE_SPEECH_REGION must be a plain region slug like eastus (got: $AZURE_SPEECH_REGION)" >&2
+    echo "Remove inline comments from .env — put comments on their own line starting with #" >&2
+    exit 1
+fi
+echo "==> Azure Speech region: $AZURE_SPEECH_REGION"
+
 # ---------------------------------------------------------------------------
 # 2. System packages (when root)
 # ---------------------------------------------------------------------------
