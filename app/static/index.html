@@ -120,6 +120,8 @@
     let currentSource = null;
     let isPlaying = false;
     let liveCaptionEl = null;
+    let speechReady = false;
+    let startupFailed = false;
 
     function setStatus(text, cls = '') {
       statusEl.textContent = text;
@@ -304,19 +306,25 @@
 
     function connectWebSocket() {
       return new Promise((resolve, reject) => {
+        speechReady = false;
+        startupFailed = false;
+
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(`${proto}//${location.host}/ws`);
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
-          setStatus('Connected — speak now', 'connected');
-          resolve();
+          setStatus('Connecting to speech service…');
         };
 
         ws.onmessage = (event) => {
           if (typeof event.data === 'string') {
             const msg = JSON.parse(event.data);
-            if (msg.type === 'transcript_partial') {
+            if (msg.type === 'speech_ready') {
+              speechReady = true;
+              setStatus('Listening — speak now', 'connected');
+              resolve();
+            } else if (msg.type === 'transcript_partial') {
               updatePartialCaption(msg.text);
               if (!isPlaying) {
                 setStatus('Hearing you…', 'hearing');
@@ -330,7 +338,9 @@
             } else if (msg.type === 'barge_in') {
               handleBargeIn();
             } else if (msg.type === 'error') {
+              startupFailed = true;
               showError(msg.message);
+              reject(new Error(msg.message));
             }
           } else {
             enqueueAudio(event.data);
@@ -338,10 +348,12 @@
         };
 
         ws.onclose = () => {
-          if (running) {
-            setStatus('WebSocket disconnected', 'error');
-            stop();
+          if (!running) return;
+          if (!speechReady && !startupFailed) {
+            startupFailed = true;
+            showError('Speech service connection failed before startup completed');
           }
+          stop({ preserveStatus: startupFailed });
         };
 
         ws.onerror = () => {
@@ -354,6 +366,8 @@
       checkMicSupport();
 
       running = true;
+      speechReady = false;
+      startupFailed = false;
       startBtn.disabled = true;
       stopBtn.disabled = false;
       transcriptEl.innerHTML = '';
@@ -386,7 +400,7 @@
       processor = audioContext.createScriptProcessor(PROCESSOR_SIZE, 1, 1);
 
       processor.onaudioprocess = (e) => {
-        if (!running || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!running || !speechReady || !ws || ws.readyState !== WebSocket.OPEN) return;
         const input = e.inputBuffer.getChannelData(0);
         updateMicStatus(computeRms(input));
         const atTarget = resampleStateful(input, nativeRate, TARGET_RATE);
@@ -401,8 +415,10 @@
       muteGain.connect(audioContext.destination);
     }
 
-    function stop() {
+    function stop(options = {}) {
+      const preserveStatus = options.preserveStatus === true;
       running = false;
+      speechReady = false;
       startBtn.disabled = false;
       stopBtn.disabled = true;
       pendingSamples = new Float32Array(0);
@@ -428,13 +444,17 @@
         ws = null;
       }
 
-      setStatus('Disconnected');
+      if (!preserveStatus) {
+        setStatus('Disconnected');
+      }
     }
 
     startBtn.addEventListener('click', () => {
       start().catch(err => {
-        showError(err.message || String(err));
-        stop();
+        if (!startupFailed) {
+          showError(err.message || String(err));
+        }
+        stop({ preserveStatus: startupFailed });
       });
     });
     stopBtn.addEventListener('click', stop);

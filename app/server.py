@@ -7,12 +7,18 @@ import time
 from pathlib import Path
 
 import numpy as np
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from app import asr, llm, tts
-from app.asr import AzureSpeechSession, build_final_event, build_partial_event
+from app import llm, tts
+from app.asr import (
+    AzureSpeechSession,
+    build_final_event,
+    build_partial_event,
+    build_speech_ready_event,
+    build_startup_error_event,
+)
+from app.config import AZURE_SPEECH_LANGUAGE, AZURE_SPEECH_REGION
 from app.vad import amplify_pcm16, compute_rms, is_speech_start, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +46,7 @@ class VoiceSession:
         self.active_task: asyncio.Task | None = None
         self.ai_busy = False
         self._closed = False
+        self._speech_ready = False
         self._frames_received = 0
         self._last_audio_log_at = 0.0
         self.speech_session = AzureSpeechSession(
@@ -50,7 +57,14 @@ class VoiceSession:
         )
 
     async def start(self) -> None:
+        logger.info(
+            "Azure Speech startup region=%s language=%s",
+            AZURE_SPEECH_REGION,
+            AZURE_SPEECH_LANGUAGE,
+        )
         await self.speech_session.start()
+        self._speech_ready = True
+        await self.send_json(build_speech_ready_event())
 
     async def send_json(self, payload: dict) -> None:
         if not self._closed:
@@ -147,6 +161,9 @@ class VoiceSession:
             self.active_task = None
 
     async def handle_audio_frame(self, pcm_bytes: bytes) -> None:
+        if not self._speech_ready:
+            return
+
         frame = pcm16_to_float32(pcm_bytes)
         if frame.size == 0:
             return
@@ -189,9 +206,19 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
     session = VoiceSession(websocket, loop)
-    await session.start()
 
     try:
+        try:
+            await session.start()
+        except Exception as exc:
+            logger.exception("Azure Speech failed to start")
+            message = f"Azure Speech failed to start: {exc}"
+            try:
+                await websocket.send_json(build_startup_error_event(message))
+            except Exception:
+                logger.exception("failed sending startup error to client")
+            return
+
         while True:
             message = await websocket.receive()
 

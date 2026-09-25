@@ -52,6 +52,23 @@ if ! [[ "$AZURE_SPEECH_REGION" =~ ^[a-z0-9-]+$ ]]; then
 fi
 echo "==> Azure Speech region: $AZURE_SPEECH_REGION"
 
+AZURE_SPEECH_KEY="${AZURE_SPEECH_KEY%%#*}"
+AZURE_SPEECH_KEY="$(echo "$AZURE_SPEECH_KEY" | xargs)"
+PLACEHOLDER_KEYS=(
+    your-speech-key-here
+    your-api-key-here
+    changeme
+    placeholder
+)
+for placeholder in "${PLACEHOLDER_KEYS[@]}"; do
+    key_lower="$(echo "$AZURE_SPEECH_KEY" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$key_lower" == "$placeholder" ]]; then
+        echo "ERROR: AZURE_SPEECH_KEY is still a placeholder ($placeholder)" >&2
+        echo "Set the key from your Azure Speech resource in Azure Portal." >&2
+        exit 1
+    fi
+done
+
 # ---------------------------------------------------------------------------
 # 2. System packages (when root)
 # ---------------------------------------------------------------------------

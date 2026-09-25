@@ -32,6 +32,16 @@ def build_partial_event(text: str, turn_id: int) -> dict:
     }
 
 
+def build_speech_ready_event() -> dict:
+    """Build a WebSocket payload indicating Azure Speech is ready."""
+    return {"type": "speech_ready"}
+
+
+def build_startup_error_event(message: str) -> dict:
+    """Build a WebSocket payload for Azure Speech startup failure."""
+    return {"type": "error", "message": message}
+
+
 def build_final_event(text: str, turn_id: int) -> dict:
     """Build a WebSocket payload for a finalized user transcript."""
     return {
@@ -58,9 +68,14 @@ class AzureSpeechSession:
         self._on_final = on_final
         self._on_error = on_error
         self._closed = False
+        self._started = False
         self._recognizer: Optional[speechsdk.SpeechRecognizer] = None
         self._push_stream: Optional[speechsdk.audio.PushAudioInputStream] = None
         self._bytes_written = 0
+
+    @property
+    def is_started(self) -> bool:
+        return self._started
 
     def _schedule(self, coro: Awaitable[None]) -> None:
         if self._closed:
@@ -76,6 +91,11 @@ class AzureSpeechSession:
         future.add_done_callback(_log_error)
 
     def _start_sync(self) -> None:
+        logger.info(
+            "starting Azure Speech region=%s language=%s",
+            AZURE_SPEECH_REGION,
+            AZURE_SPEECH_LANGUAGE,
+        )
         speech_config = speechsdk.SpeechConfig(
             subscription=AZURE_SPEECH_KEY,
             region=AZURE_SPEECH_REGION,
@@ -117,6 +137,7 @@ class AzureSpeechSession:
         self._recognizer.canceled.connect(self._handle_canceled)
 
         self._recognizer.start_continuous_recognition_async().get()
+        self._started = True
         logger.info(
             "Azure Speech session started region=%s language=%s",
             AZURE_SPEECH_REGION,
@@ -124,6 +145,8 @@ class AzureSpeechSession:
         )
 
     async def start(self) -> None:
+        if self._started:
+            return
         await asyncio.to_thread(self._start_sync)
 
     def push_audio(self, pcm_bytes: bytes) -> None:
@@ -196,7 +219,7 @@ class AzureSpeechSession:
         self._schedule(self._on_error(message))
 
     def _close_sync(self) -> None:
-        if self._recognizer is not None:
+        if self._recognizer is not None and self._started:
             try:
                 self._recognizer.stop_continuous_recognition_async().get()
             except Exception:
@@ -206,6 +229,9 @@ class AzureSpeechSession:
                 self._push_stream.close()
             except Exception:
                 logger.exception("failed closing Azure Speech push stream")
+        self._recognizer = None
+        self._push_stream = None
+        self._started = False
 
     async def close(self) -> None:
         if self._closed:
