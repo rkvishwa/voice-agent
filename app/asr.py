@@ -110,12 +110,14 @@ class AzureSpeechSession:
             "800",
         )
 
-        stream_format = speechsdk.audio.AudioStreamFormat.get_wave_format_pcm(
-            SAMPLE_RATE,
-            16,
-            1,
+        stream_format = speechsdk.audio.AudioStreamFormat(
+            samples_per_second=SAMPLE_RATE,
+            bits_per_sample=16,
+            channels=1,
         )
-        self._push_stream = speechsdk.audio.PushAudioInputStream(stream_format)
+        self._push_stream = speechsdk.audio.PushAudioInputStream(
+            stream_format=stream_format,
+        )
         audio_config = speechsdk.audio.AudioConfig(stream=self._push_stream)
 
         self._recognizer = speechsdk.SpeechRecognizer(

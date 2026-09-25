@@ -58,6 +58,17 @@ class TestAzureSpeechSessionLifecycle(unittest.IsolatedAsyncioTestCase):
         await session.close()
         self.assertFalse(session.is_started)
 
+    def test_audio_stream_format_constructor(self) -> None:
+        import azure.cognitiveservices.speech as speechsdk
+
+        fmt = speechsdk.audio.AudioStreamFormat(
+            samples_per_second=16000,
+            bits_per_sample=16,
+            channels=1,
+        )
+        stream = speechsdk.audio.PushAudioInputStream(stream_format=fmt)
+        stream.close()
+
     @patch("app.asr.AzureSpeechSession._start_sync")
     async def test_start_marks_session_started(self, start_sync: MagicMock) -> None:
         loop = asyncio.get_running_loop()
