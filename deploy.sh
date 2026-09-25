@@ -144,6 +144,10 @@ WhisperModel('base.en', device='cpu', compute_type='int8', cpu_threads=2)
 "
 
     bash "$INSTALL_DIR/scripts/setup_systemd.sh"
+
+    echo ""
+    echo "==> App deployed. For HTTPS with nginx:"
+    echo "    sudo DOMAIN=voice.metl.run CERTBOT_EMAIL=you@example.com $INSTALL_DIR/scripts/setup_nginx.sh"
 else
     chmod +x run.sh scripts/*.sh
     echo ""

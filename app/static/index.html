@@ -37,9 +37,12 @@
       margin-bottom: 1.5rem;
       font-size: 0.85rem;
       color: #9aa0a6;
+      max-width: 640px;
+      text-align: center;
     }
     #status.connected { color: #81c995; }
     #status.speaking { color: #fdd663; }
+    #status.error { color: #f28b82; }
     #transcript {
       width: 100%;
       max-width: 640px;
@@ -58,6 +61,7 @@
     }
     .msg.user .role { color: #8ab4f8; }
     .msg.agent .role { color: #81c995; }
+    .msg.error .role { color: #f28b82; }
     .msg .text { font-size: 0.95rem; }
   </style>
 </head>
@@ -66,16 +70,17 @@
   <p class="subtitle">Full-duplex voice assistant with barge-in</p>
 
   <div class="controls">
-    <button id="startBtn">Start</button>
-    <button id="stopBtn" disabled>Stop</button>
+    <button id="startBtn" type="button">Start</button>
+    <button id="stopBtn" type="button" disabled>Stop</button>
   </div>
 
   <div id="status">Disconnected</div>
   <div id="transcript"></div>
 
   <script>
-    const SAMPLE_RATE = 16000;
-    const FRAME_SAMPLES = 1600;
+    const TARGET_RATE = 16000;
+    const SEND_SAMPLES = 1600; // ~100 ms at 16 kHz
+    const PROCESSOR_SIZE = 4096; // must be 256|512|1024|2048|4096|8192|16384
 
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
@@ -88,6 +93,7 @@
     let processor = null;
     let source = null;
     let running = false;
+    let pendingSamples = new Float32Array(0);
 
     const playbackQueue = [];
     let currentSource = null;
@@ -98,12 +104,54 @@
       statusEl.className = cls;
     }
 
+    function showError(message) {
+      setStatus(message, 'error');
+      addTranscript('error', message);
+      console.error(message);
+    }
+
     function addTranscript(role, text) {
       const div = document.createElement('div');
       div.className = `msg ${role}`;
-      div.innerHTML = `<div class="role">${role}</div><div class="text">${text}</div>`;
+      const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      div.innerHTML = `<div class="role">${role}</div><div class="text">${safe}</div>`;
       transcriptEl.appendChild(div);
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function checkMicSupport() {
+      if (!window.isSecureContext) {
+        throw new Error(
+          'Microphone requires a secure context. Use https://your-domain or http://localhost — ' +
+          'browsers block mic access on plain http:// IP addresses.'
+        );
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Microphone API not available in this browser.');
+      }
+    }
+
+    function resample(input, fromRate, toRate) {
+      if (fromRate === toRate) return input;
+      const ratio = fromRate / toRate;
+      const outLen = Math.floor(input.length / ratio);
+      const output = new Float32Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const pos = i * ratio;
+        const idx = Math.floor(pos);
+        const frac = pos - idx;
+        const a = input[idx] ?? 0;
+        const b = input[idx + 1] ?? a;
+        output[i] = a * (1 - frac) + b * frac;
+      }
+      return output;
+    }
+
+    function concatFloat32(a, b) {
+      const out = new Float32Array(a.length + b.length);
+      out.set(a, 0);
+      out.set(b, a.length);
+      return out;
     }
 
     function float32ToInt16(float32Array) {
@@ -113,6 +161,15 @@
         int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
       return int16;
+    }
+
+    function flushPendingSamples() {
+      while (pendingSamples.length >= SEND_SAMPLES && ws && ws.readyState === WebSocket.OPEN) {
+        const chunk = pendingSamples.slice(0, SEND_SAMPLES);
+        pendingSamples = pendingSamples.slice(SEND_SAMPLES);
+        const int16 = float32ToInt16(chunk);
+        ws.send(int16.buffer);
+      }
     }
 
     function handleBargeIn() {
@@ -126,7 +183,7 @@
     }
 
     async function playNext() {
-      if (isPlaying || playbackQueue.length === 0) return;
+      if (isPlaying || playbackQueue.length === 0 || !audioContext) return;
       isPlaying = true;
       setStatus('Agent speaking…', 'speaking');
 
@@ -159,61 +216,81 @@
     }
 
     function connectWebSocket() {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.binaryType = 'arraybuffer';
+      return new Promise((resolve, reject) => {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}/ws`);
+        ws.binaryType = 'arraybuffer';
 
-      ws.onopen = () => setStatus('Connected — speak now', 'connected');
+        ws.onopen = () => {
+          setStatus('Connected — speak now', 'connected');
+          resolve();
+        };
 
-      ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'transcript') {
-            addTranscript(msg.role, msg.text);
-          } else if (msg.type === 'barge_in') {
-            handleBargeIn();
-          } else if (msg.type === 'error') {
-            addTranscript('agent', `Error: ${msg.message}`);
+        ws.onmessage = (event) => {
+          if (typeof event.data === 'string') {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'transcript') {
+              addTranscript(msg.role, msg.text);
+            } else if (msg.type === 'barge_in') {
+              handleBargeIn();
+            } else if (msg.type === 'error') {
+              addTranscript('error', msg.message);
+            }
+          } else {
+            enqueueAudio(event.data);
           }
-        } else {
-          enqueueAudio(event.data);
-        }
-      };
+        };
 
-      ws.onclose = () => {
-        setStatus('Disconnected');
-        if (running) stop();
-      };
+        ws.onclose = () => {
+          if (running) {
+            setStatus('WebSocket disconnected', 'error');
+            stop();
+          }
+        };
 
-      ws.onerror = () => setStatus('WebSocket error');
+        ws.onerror = () => {
+          reject(new Error('WebSocket connection failed — is the server running?'));
+        };
+      });
     }
 
     async function start() {
+      checkMicSupport();
+
       running = true;
       startBtn.disabled = true;
       stopBtn.disabled = false;
       transcriptEl.innerHTML = '';
+      pendingSamples = new Float32Array(0);
 
-      audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+      setStatus('Requesting microphone access…');
+
+      audioContext = new AudioContext();
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: SAMPLE_RATE,
           echoCancellation: true,
           noiseSuppression: true,
         },
       });
 
-      connectWebSocket();
+      setStatus('Connecting…');
+      await connectWebSocket();
 
+      const nativeRate = audioContext.sampleRate;
       source = audioContext.createMediaStreamSource(mediaStream);
-      processor = audioContext.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+      processor = audioContext.createScriptProcessor(PROCESSOR_SIZE, 1, 1);
 
       processor.onaudioprocess = (e) => {
         if (!running || !ws || ws.readyState !== WebSocket.OPEN) return;
         const input = e.inputBuffer.getChannelData(0);
-        const int16 = float32ToInt16(input);
-        ws.send(int16.buffer);
+        const atTarget = resample(input, nativeRate, TARGET_RATE);
+        pendingSamples = concatFloat32(pendingSamples, atTarget);
+        flushPendingSamples();
       };
 
       source.connect(processor);
@@ -224,10 +301,11 @@
       running = false;
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      pendingSamples = new Float32Array(0);
 
       handleBargeIn();
 
-      if (processor) { processor.disconnect(); processor = null; }
+      if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null; }
       if (source) { source.disconnect(); source = null; }
       if (mediaStream) {
         mediaStream.getTracks().forEach(t => t.stop());
@@ -245,10 +323,12 @@
       setStatus('Disconnected');
     }
 
-    startBtn.addEventListener('click', () => start().catch(err => {
-      setStatus(`Mic error: ${err.message}`);
-      stop();
-    }));
+    startBtn.addEventListener('click', () => {
+      start().catch(err => {
+        showError(err.message || String(err));
+        stop();
+      });
+    });
     stopBtn.addEventListener('click', stop);
   </script>
 </body>
