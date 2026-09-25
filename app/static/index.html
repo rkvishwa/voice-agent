@@ -1,167 +1,59 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Voice Agent</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #0f1117;
-      color: #e8eaed;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem 1rem;
-    }
-    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-    .subtitle { color: #9aa0a6; margin-bottom: 2rem; font-size: 0.9rem; }
-    .controls { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; justify-content: center; }
-    .tts-panel {
-      width: 100%;
-      max-width: 640px;
-      background: #1e2128;
-      border-radius: 12px;
-      padding: 1rem 1.25rem;
-      margin-bottom: 1.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-    .tts-panel label {
-      font-size: 0.75rem;
-      color: #9aa0a6;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
-      display: block;
-    }
-    .tts-row { display: flex; flex-direction: column; gap: 0.25rem; }
-    .tts-panel select {
-      width: 100%;
-      padding: 0.5rem 0.75rem;
-      border-radius: 8px;
-      border: 1px solid #3c4043;
-      background: #0f1117;
-      color: #e8eaed;
-      font-size: 0.95rem;
-    }
-    .tts-panel select:disabled { opacity: 0.5; }
-    .tts-speed-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-    }
-    #ttsSpeedValue { font-size: 0.85rem; color: #e8eaed; text-transform: none; letter-spacing: normal; }
-    .tts-panel input[type="range"] {
-      width: 100%;
-      accent-color: #1a73e8;
-    }
-    .tts-panel input[type="range"]:disabled { opacity: 0.5; }
-    #ttsHint { font-size: 0.8rem; color: #9aa0a6; min-height: 1.2em; }
-    button {
-      padding: 0.75rem 1.5rem;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
-    #startBtn { background: #1a73e8; color: white; }
-    #stopBtn { background: #5f6368; color: white; }
-    #status {
-      padding: 0.5rem 1rem;
-      border-radius: 6px;
-      background: #1e2128;
-      margin-bottom: 1.5rem;
-      font-size: 0.85rem;
-      color: #9aa0a6;
-      max-width: 640px;
-      text-align: center;
-    }
-    #status.connected { color: #81c995; }
-    #status.hearing { color: #8ab4f8; }
-    #status.speaking { color: #fdd663; }
-    #status.error { color: #f28b82; }
-    #transcript {
-      width: 100%;
-      max-width: 640px;
-      background: #1e2128;
-      border-radius: 12px;
-      padding: 1.5rem;
-      min-height: 300px;
-      overflow-y: auto;
-    }
-    .msg { margin-bottom: 1rem; line-height: 1.5; }
-    .msg .role {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
-    }
-    .msg.user .role { color: #8ab4f8; }
-    .msg.agent .role { color: #81c995; }
-    .msg.error .role { color: #f28b82; }
-    .msg.partial .role { color: #8ab4f8; }
-    .msg.partial .text {
-      font-size: 0.95rem;
-      color: #bdc1c6;
-      font-style: italic;
-    }
-    .msg.partial .badge {
-      display: inline-block;
-      margin-left: 0.5rem;
-      font-size: 0.65rem;
-      color: #9aa0a6;
-      font-style: normal;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .msg.agent.partial .role { color: #81c995; }
-    .msg.agent.partial .text {
-      font-size: 0.95rem;
-      color: #bdc1c6;
-      font-style: italic;
-    }
-    .msg .text { font-size: 0.95rem; }
-  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-  <h1>Voice Agent</h1>
-  <p class="subtitle">Full-duplex voice assistant with barge-in</p>
+<body class="h-dvh overflow-hidden bg-zinc-950 text-zinc-100 antialiased">
+  <div class="flex h-full min-h-0 flex-col md:flex-row">
+    <aside class="flex h-1/2 min-h-0 flex-col border-b border-zinc-800 md:h-full md:w-96 md:shrink-0 md:border-b-0 md:border-r">
+      <div class="min-h-0 flex-1 overflow-y-auto p-5">
+        <header class="mb-6">
+          <h1 class="text-xl font-semibold tracking-tight">Voice Agent</h1>
+          <p class="mt-1 text-sm text-zinc-400">Full-duplex assistant with barge-in</p>
+        </header>
 
-  <div class="tts-panel">
-    <div class="tts-row">
-      <label for="ttsEngineSelect">Speech engine</label>
-      <select id="ttsEngineSelect">
-        <option value="kokoro">Local Kokoro</option>
-        <option value="azure">Azure Speech</option>
-      </select>
-    </div>
-    <div class="tts-row">
-      <label for="ttsVoiceSelect">Voice</label>
-      <select id="ttsVoiceSelect"></select>
-    </div>
-    <div class="tts-row">
-      <div class="tts-speed-header">
-        <label for="ttsSpeedSlider">Speed</label>
-        <span id="ttsSpeedValue">1.05×</span>
+        <section class="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <div class="space-y-1">
+            <label for="ttsEngineSelect" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Speech engine</label>
+            <select id="ttsEngineSelect" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50">
+              <option value="kokoro">Local Kokoro</option>
+              <option value="azure">Azure Speech</option>
+            </select>
+          </div>
+          <div class="space-y-1">
+            <label for="ttsVoiceSelect" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Voice</label>
+            <select id="ttsVoiceSelect" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"></select>
+          </div>
+          <div class="space-y-1">
+            <div class="flex items-baseline justify-between">
+              <label for="ttsSpeedSlider" class="text-xs font-medium uppercase tracking-wide text-zinc-500">Speed</label>
+              <span id="ttsSpeedValue" class="text-sm text-zinc-200">1.05×</span>
+            </div>
+            <input id="ttsSpeedSlider" type="range" min="0.75" max="1.5" step="0.05" value="1.05" class="w-full accent-sky-500 disabled:opacity-50" />
+          </div>
+          <p id="ttsHint" class="min-h-[1.25rem] text-xs text-zinc-500"></p>
+        </section>
+
+        <div class="mt-4 flex flex-wrap gap-3">
+          <button id="startBtn" type="button" class="rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40">Start</button>
+          <button id="stopBtn" type="button" disabled class="rounded-lg bg-zinc-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-500 disabled:cursor-not-allowed disabled:opacity-40">Stop</button>
+        </div>
+
+        <button id="logoutBtn" type="button" class="mt-6 w-full rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:bg-zinc-800">Log out</button>
       </div>
-      <input id="ttsSpeedSlider" type="range" min="0.75" max="1.5" step="0.05" value="1.05" />
-    </div>
-    <div id="ttsHint"></div>
-  </div>
+    </aside>
 
-  <div class="controls">
-    <button id="startBtn" type="button">Start</button>
-    <button id="stopBtn" type="button" disabled>Stop</button>
+    <main class="flex h-1/2 min-h-0 flex-1 flex-col md:h-full">
+      <div class="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
+        <h2 class="mb-3 shrink-0 text-xs font-medium uppercase tracking-wide text-zinc-500">Conversation</h2>
+        <div id="status" class="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2 text-center text-sm text-zinc-400">Disconnected</div>
+        <div id="transcript" class="mt-4 min-h-0 flex-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"></div>
+      </div>
+    </main>
   </div>
-
-  <div id="status">Disconnected</div>
-  <div id="transcript"></div>
 
   <script>
     const TARGET_RATE = 16000;
@@ -182,6 +74,23 @@
     const ttsSpeedSlider = document.getElementById('ttsSpeedSlider');
     const ttsSpeedValue = document.getElementById('ttsSpeedValue');
     const ttsHintEl = document.getElementById('ttsHint');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    const STATUS_BASE =
+      'rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2 text-center text-sm';
+    const STATUS_VARIANTS = {
+      '': `${STATUS_BASE} text-zinc-400`,
+      connected: `${STATUS_BASE} text-emerald-400`,
+      hearing: `${STATUS_BASE} text-sky-400`,
+      speaking: `${STATUS_BASE} text-amber-300`,
+      error: `${STATUS_BASE} text-red-400`,
+    };
+    const MSG_WRAP = 'mb-4 leading-relaxed';
+    const ROLE_CLASS = {
+      user: 'text-xs uppercase tracking-wide text-sky-400 mb-1',
+      agent: 'text-xs uppercase tracking-wide text-emerald-400 mb-1',
+      error: 'text-xs uppercase tracking-wide text-red-400 mb-1',
+    };
 
     let ttsCatalog = null;
 
@@ -216,7 +125,7 @@
 
     function setStatus(text, cls = '') {
       statusEl.textContent = text;
-      statusEl.className = cls;
+      statusEl.className = STATUS_VARIANTS[cls] || STATUS_VARIANTS[''];
     }
 
     function showError(message) {
@@ -240,9 +149,9 @@
       const safe = escapeHtml(text);
       if (!liveCaptionEl) {
         liveCaptionEl = document.createElement('div');
-        liveCaptionEl.className = 'msg user partial';
+        liveCaptionEl.className = MSG_WRAP;
         liveCaptionEl.innerHTML =
-          '<div class="role">you<span class="badge">live</span></div><div class="text"></div>';
+          '<div class="text-xs uppercase tracking-wide text-sky-400 mb-1">you<span class="ml-2 text-[0.65rem] normal-case text-zinc-500">live</span></div><div class="text text-[0.95rem] italic text-zinc-400"></div>';
         transcriptEl.appendChild(liveCaptionEl);
       }
       liveCaptionEl.querySelector('.text').textContent = text;
@@ -264,9 +173,9 @@
     function ensureLiveAgentCaption() {
       if (!liveAgentCaptionEl) {
         liveAgentCaptionEl = document.createElement('div');
-        liveAgentCaptionEl.className = 'msg agent partial';
+        liveAgentCaptionEl.className = MSG_WRAP;
         liveAgentCaptionEl.innerHTML =
-          '<div class="role">agent<span class="badge">live</span></div><div class="text"></div>';
+          '<div class="text-xs uppercase tracking-wide text-emerald-400 mb-1">agent<span class="ml-2 text-[0.65rem] normal-case text-zinc-500">live</span></div><div class="text text-[0.95rem] italic text-zinc-400"></div>';
         transcriptEl.appendChild(liveAgentCaptionEl);
       }
       return liveAgentCaptionEl.querySelector('.text');
@@ -342,9 +251,10 @@
 
     function addTranscript(role, text) {
       const div = document.createElement('div');
-      div.className = `msg ${role}`;
+      div.className = MSG_WRAP;
       const safe = escapeHtml(text);
-      div.innerHTML = `<div class="role">${role}</div><div class="text">${safe}</div>`;
+      const roleClass = ROLE_CLASS[role] || ROLE_CLASS.user;
+      div.innerHTML = `<div class="${roleClass}">${role}</div><div class="text-sm text-zinc-100">${safe}</div>`;
       transcriptEl.appendChild(div);
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
@@ -510,6 +420,10 @@
     function handleBargeIn() {
       cancelEchoTail();
       clearAgentWordRevealTimer();
+      const partialAgent = agentRevealedText.trim();
+      if (partialAgent) {
+        addTranscript('agent', partialAgent);
+      }
       stashedAgentFinalText = null;
       agentRevealedText = '';
       clearLiveAgentCaption();
@@ -920,6 +834,16 @@
       });
     });
     stopBtn.addEventListener('click', stop);
+
+    logoutBtn.addEventListener('click', async () => {
+      stop();
+      try {
+        await fetch('/api/logout', { method: 'POST' });
+      } catch (err) {
+        console.error(err);
+      }
+      window.location.href = '/login';
+    });
   </script>
 </body>
 </html>

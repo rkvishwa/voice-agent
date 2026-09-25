@@ -7,10 +7,17 @@ import time
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app import llm, tts
+from app.auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    create_session_token,
+    parse_session_token,
+    verify_credentials,
+)
 from app.asr import (
     AzureSpeechSession,
     build_final_event,
@@ -49,13 +56,68 @@ STT_FLUSH_SILENCE_BYTES = int(SAMPLE_RATE * 1.0) * 2
 app = FastAPI(title="Voice Agent")
 
 
+def _authenticated(request: Request) -> bool:
+    return parse_session_token(request.cookies.get(SESSION_COOKIE))
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    if _authenticated(request):
+        return RedirectResponse("/", status_code=302)
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.post("/api/login")
+async def api_login(request: Request):
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse(
+            {"ok": False, "error": "Invalid request"},
+            status_code=400,
+        )
+    email = body.get("email", "")
+    password = body.get("password", "")
+    if not isinstance(email, str) or not isinstance(password, str):
+        return JSONResponse(
+            {"ok": False, "error": "Invalid email or password"},
+            status_code=401,
+        )
+    if not verify_credentials(email, password):
+        return JSONResponse(
+            {"ok": False, "error": "Invalid email or password"},
+            status_code=401,
+        )
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        create_session_token(),
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_MAX_AGE,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/logout")
+async def api_logout():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
 @app.get("/")
-async def index():
+async def index(request: Request):
+    if not _authenticated(request):
+        return RedirectResponse("/login", status_code=302)
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/tts")
-async def tts_catalog():
+async def tts_catalog(request: Request):
+    if not _authenticated(request):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return get_tts_catalog()
 
 
@@ -555,6 +617,9 @@ class VoiceSession:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    if not parse_session_token(websocket.cookies.get(SESSION_COOKIE)):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
     await websocket.accept()
     loop = asyncio.get_running_loop()
     session = VoiceSession(websocket, loop)

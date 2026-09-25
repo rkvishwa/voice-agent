@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Voice Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex min-h-dvh items-center justify-center bg-zinc-950 px-4 text-zinc-100 antialiased">
+  <div class="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900/80 p-8 shadow-xl">
+    <header class="mb-8 text-center">
+      <h1 class="text-xl font-semibold tracking-tight">Voice Agent</h1>
+      <p class="mt-2 text-sm text-zinc-400">Sign in to continue</p>
+    </header>
+
+    <form id="loginForm" class="space-y-4">
+      <div class="space-y-1">
+        <label for="email" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Email</label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          autocomplete="username"
+          required
+          class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+          placeholder="you@example.com"
+        />
+      </div>
+      <div class="space-y-1">
+        <label for="password" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+          class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+        />
+      </div>
+      <p id="loginError" class="hidden min-h-[1.25rem] text-sm text-red-400" role="alert"></p>
+      <button
+        id="loginBtn"
+        type="submit"
+        class="w-full rounded-lg bg-sky-600 py-2.5 text-sm font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Sign in
+      </button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginError = document.getElementById('loginError');
+
+    function showLoginError(message) {
+      loginError.textContent = message;
+      loginError.classList.remove('hidden');
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      loginError.classList.add('hidden');
+      loginError.textContent = '';
+      loginBtn.disabled = true;
+
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showLoginError(data.error || 'Sign in failed');
+          loginBtn.disabled = false;
+          return;
+        }
+        window.location.href = '/';
+      } catch (err) {
+        showLoginError('Could not reach the server');
+        loginBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

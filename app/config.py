@@ -13,6 +13,9 @@ _REQUIRED_VARS = (
     "AZURE_OPENAI_DEPLOYMENT",
     "AZURE_SPEECH_KEY",
     "AZURE_SPEECH_REGION",
+    "AUTH_EMAIL",
+    "AUTH_PASSWORD",
+    "AUTH_SECRET",
 )
 
 
@@ -54,6 +57,10 @@ AZURE_SPEECH_PHRASES: list[str] = [
     for phrase in _optional("AZURE_SPEECH_PHRASES", "").split(",")
     if phrase.strip()
 ]
+
+AUTH_EMAIL: str = _require("AUTH_EMAIL")
+AUTH_PASSWORD: str = _require("AUTH_PASSWORD")
+AUTH_SECRET: str = _require("AUTH_SECRET")
 
 HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8000"))
