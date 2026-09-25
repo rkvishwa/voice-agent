@@ -6,51 +6,51 @@
   <title>Voice Agent</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="h-dvh overflow-hidden bg-zinc-950 text-zinc-100 antialiased">
+<body class="h-dvh overflow-hidden bg-zinc-50 text-zinc-900 antialiased">
   <div class="flex h-full min-h-0 flex-col md:flex-row">
-    <aside class="flex h-1/2 min-h-0 flex-col border-b border-zinc-800 md:h-full md:w-96 md:shrink-0 md:border-b-0 md:border-r">
+    <aside class="flex h-1/2 min-h-0 flex-col border-b border-zinc-200 bg-white md:h-full md:w-96 md:shrink-0 md:border-b-0 md:border-r">
       <div class="min-h-0 flex-1 overflow-y-auto p-5">
         <header class="mb-6">
-          <h1 class="text-xl font-semibold tracking-tight">Voice Agent</h1>
-          <p class="mt-1 text-sm text-zinc-400">Full-duplex assistant with barge-in</p>
+          <h1 class="text-xl font-semibold tracking-tight text-zinc-900">Voice Agent</h1>
+          <p class="mt-1 text-sm text-zinc-500">Full-duplex assistant with barge-in</p>
         </header>
 
-        <section class="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <section class="space-y-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 shadow-sm">
           <div class="space-y-1">
             <label for="ttsEngineSelect" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Speech engine</label>
-            <select id="ttsEngineSelect" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50">
+            <select id="ttsEngineSelect" class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50">
               <option value="kokoro">Local Kokoro</option>
               <option value="azure">Azure Speech</option>
             </select>
           </div>
           <div class="space-y-1">
             <label for="ttsVoiceSelect" class="block text-xs font-medium uppercase tracking-wide text-zinc-500">Voice</label>
-            <select id="ttsVoiceSelect" class="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"></select>
+            <select id="ttsVoiceSelect" class="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"></select>
           </div>
           <div class="space-y-1">
             <div class="flex items-baseline justify-between">
               <label for="ttsSpeedSlider" class="text-xs font-medium uppercase tracking-wide text-zinc-500">Speed</label>
-              <span id="ttsSpeedValue" class="text-sm text-zinc-200">1.05×</span>
+              <span id="ttsSpeedValue" class="text-sm font-medium text-zinc-700">1.05×</span>
             </div>
-            <input id="ttsSpeedSlider" type="range" min="0.75" max="1.5" step="0.05" value="1.05" class="w-full accent-sky-500 disabled:opacity-50" />
+            <input id="ttsSpeedSlider" type="range" min="0.75" max="1.5" step="0.05" value="1.05" class="w-full accent-sky-600 disabled:opacity-50" />
           </div>
           <p id="ttsHint" class="min-h-[1.25rem] text-xs text-zinc-500"></p>
         </section>
 
         <div class="mt-4 flex flex-wrap gap-3">
-          <button id="startBtn" type="button" class="rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40">Start</button>
-          <button id="stopBtn" type="button" disabled class="rounded-lg bg-zinc-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-500 disabled:cursor-not-allowed disabled:opacity-40">Stop</button>
+          <button id="startBtn" type="button" class="rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40">Start</button>
+          <button id="stopBtn" type="button" disabled class="rounded-lg border border-zinc-300 bg-white px-5 py-2.5 text-sm font-medium text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40">Stop</button>
         </div>
 
-        <button id="logoutBtn" type="button" class="mt-6 w-full rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:bg-zinc-800">Log out</button>
+        <button id="logoutBtn" type="button" class="mt-6 w-full rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-600 shadow-sm transition hover:bg-zinc-50">Log out</button>
       </div>
     </aside>
 
-    <main class="flex h-1/2 min-h-0 flex-1 flex-col md:h-full">
+    <main class="flex h-1/2 min-h-0 flex-1 flex-col bg-zinc-50 md:h-full">
       <div class="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
         <h2 class="mb-3 shrink-0 text-xs font-medium uppercase tracking-wide text-zinc-500">Conversation</h2>
-        <div id="status" class="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2 text-center text-sm text-zinc-400">Disconnected</div>
-        <div id="transcript" class="mt-4 min-h-0 flex-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/40 p-4"></div>
+        <div id="status" class="shrink-0 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-center text-sm text-zinc-500 shadow-sm">Disconnected</div>
+        <div id="transcript" class="mt-4 min-h-0 flex-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"></div>
       </div>
     </main>
   </div>
@@ -77,19 +77,19 @@
     const logoutBtn = document.getElementById('logoutBtn');
 
     const STATUS_BASE =
-      'rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2 text-center text-sm';
+      'shrink-0 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-center text-sm shadow-sm';
     const STATUS_VARIANTS = {
-      '': `${STATUS_BASE} text-zinc-400`,
-      connected: `${STATUS_BASE} text-emerald-400`,
-      hearing: `${STATUS_BASE} text-sky-400`,
-      speaking: `${STATUS_BASE} text-amber-300`,
-      error: `${STATUS_BASE} text-red-400`,
+      '': `${STATUS_BASE} text-zinc-500`,
+      connected: `${STATUS_BASE} text-emerald-600`,
+      hearing: `${STATUS_BASE} text-sky-600`,
+      speaking: `${STATUS_BASE} text-amber-600`,
+      error: `${STATUS_BASE} text-red-600`,
     };
     const MSG_WRAP = 'mb-4 leading-relaxed';
     const ROLE_CLASS = {
-      user: 'text-xs uppercase tracking-wide text-sky-400 mb-1',
-      agent: 'text-xs uppercase tracking-wide text-emerald-400 mb-1',
-      error: 'text-xs uppercase tracking-wide text-red-400 mb-1',
+      user: 'text-xs uppercase tracking-wide text-sky-600 mb-1',
+      agent: 'text-xs uppercase tracking-wide text-emerald-600 mb-1',
+      error: 'text-xs uppercase tracking-wide text-red-600 mb-1',
     };
 
     let ttsCatalog = null;
@@ -151,7 +151,7 @@
         liveCaptionEl = document.createElement('div');
         liveCaptionEl.className = MSG_WRAP;
         liveCaptionEl.innerHTML =
-          '<div class="text-xs uppercase tracking-wide text-sky-400 mb-1">you<span class="ml-2 text-[0.65rem] normal-case text-zinc-500">live</span></div><div class="text text-[0.95rem] italic text-zinc-400"></div>';
+          '<div class="text-xs uppercase tracking-wide text-sky-600 mb-1">you<span class="ml-2 text-[0.65rem] normal-case text-zinc-400">live</span></div><div class="text text-[0.95rem] italic text-zinc-600"></div>';
         transcriptEl.appendChild(liveCaptionEl);
       }
       liveCaptionEl.querySelector('.text').textContent = text;
@@ -175,7 +175,7 @@
         liveAgentCaptionEl = document.createElement('div');
         liveAgentCaptionEl.className = MSG_WRAP;
         liveAgentCaptionEl.innerHTML =
-          '<div class="text-xs uppercase tracking-wide text-emerald-400 mb-1">agent<span class="ml-2 text-[0.65rem] normal-case text-zinc-500">live</span></div><div class="text text-[0.95rem] italic text-zinc-400"></div>';
+          '<div class="text-xs uppercase tracking-wide text-emerald-600 mb-1">agent<span class="ml-2 text-[0.65rem] normal-case text-zinc-400">live</span></div><div class="text text-[0.95rem] italic text-zinc-600"></div>';
         transcriptEl.appendChild(liveAgentCaptionEl);
       }
       return liveAgentCaptionEl.querySelector('.text');
@@ -254,7 +254,7 @@
       div.className = MSG_WRAP;
       const safe = escapeHtml(text);
       const roleClass = ROLE_CLASS[role] || ROLE_CLASS.user;
-      div.innerHTML = `<div class="${roleClass}">${role}</div><div class="text-sm text-zinc-100">${safe}</div>`;
+      div.innerHTML = `<div class="${roleClass}">${role}</div><div class="text-sm text-zinc-800">${safe}</div>`;
       transcriptEl.appendChild(div);
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
