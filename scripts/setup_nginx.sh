@@ -67,6 +67,16 @@ fi
 
 mkdir -p "$WEBROOT"
 
+# WebSocket upgrade map must live in conf.d (http context), not sites-enabled.
+WS_MAP="/etc/nginx/conf.d/voice-agent-ws-map.conf"
+echo "==> Writing WebSocket map ($WS_MAP)"
+cat > "$WS_MAP" <<'EOF'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+EOF
+
 # ---------------------------------------------------------------------------
 # HTTP-only config first (needed for certbot webroot / nginx plugin)
 # ---------------------------------------------------------------------------
