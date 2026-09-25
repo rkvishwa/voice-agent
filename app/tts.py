@@ -1,58 +1,58 @@
-"""Kokoro-82M ONNX text-to-speech wrapper."""
+"""Azure neural text-to-speech synthesis."""
 
 import asyncio
-import inspect
-import io
-from typing import Optional
+import logging
+from typing import Any
 
-import soundfile as sf
-from kokoro_onnx import Kokoro
+import azure.cognitiveservices.speech as speechsdk
+from azure.cognitiveservices.speech import ResultReason
 
-from app.config import KOKORO_MODEL_PATH, KOKORO_VOICES_PATH
+from app.config import AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_SPEECH_VOICE
 
-_kokoro: Optional[Kokoro] = None
-_voice: Optional[str] = None
-_create_kwargs: dict = {}
+logger = logging.getLogger(__name__)
 
 
-def _init_kokoro() -> Kokoro:
-    global _kokoro, _voice, _create_kwargs
+def audio_from_synthesis_result(result: Any) -> bytes:
+    """Extract WAV bytes from a Speech SDK synthesis result or raise with details."""
+    if result.reason == ResultReason.SynthesizingAudioCompleted:
+        audio = result.audio_data
+        if not audio:
+            raise RuntimeError("Azure Speech TTS returned empty audio")
+        return bytes(audio)
 
-    if _kokoro is not None:
-        return _kokoro
+    if result.reason == ResultReason.Canceled:
+        details = result.cancellation_details
+        if details is not None:
+            message = details.error_details or str(details.reason)
+        else:
+            message = "unknown cancellation"
+        raise RuntimeError(f"Azure Speech TTS canceled: {message}")
 
-    _kokoro = Kokoro(str(KOKORO_MODEL_PATH), str(KOKORO_VOICES_PATH))
-
-    preferred = ("af_heart", "am_adam")
-    available = set(_kokoro.get_voices())
-    _voice = next((v for v in preferred if v in available), None)
-    if _voice is None and available:
-        _voice = sorted(available)[0]
-    if _voice is None:
-        raise RuntimeError("No Kokoro voices found in voices.bin")
-
-    sig = inspect.signature(_kokoro.create)
-    if "lang" in sig.parameters:
-        _create_kwargs["lang"] = "en-us"
-
-    return _kokoro
+    raise RuntimeError(f"Azure Speech TTS failed: {result.reason}")
 
 
 def _synth_sync(text: str) -> bytes:
-    kokoro = _init_kokoro()
-    samples, sample_rate = kokoro.create(
-        text,
-        voice=_voice,
-        speed=1.05,
-        **_create_kwargs,
+    speech_config = speechsdk.SpeechConfig(
+        subscription=AZURE_SPEECH_KEY,
+        region=AZURE_SPEECH_REGION,
     )
-    buffer = io.BytesIO()
-    sf.write(buffer, samples, sample_rate, format="WAV")
-    return buffer.getvalue()
+    speech_config.speech_synthesis_voice_name = AZURE_SPEECH_VOICE
+    speech_config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
+    )
+
+    synthesizer = speechsdk.SpeechSynthesizer(
+        speech_config=speech_config,
+        audio_config=None,
+    )
+    result = synthesizer.speak_text_async(text).get()
+    audio = audio_from_synthesis_result(result)
+    logger.debug("Azure TTS synthesized %d bytes for %r", len(audio), text[:80])
+    return audio
 
 
 async def synth_chunk(text: str) -> bytes:
-    """Synthesize text into in-memory WAV bytes."""
+    """Synthesize text into in-memory WAV bytes (24 kHz mono)."""
     cleaned = text.strip()
     if not cleaned:
         return b""

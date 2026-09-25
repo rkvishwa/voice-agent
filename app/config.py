@@ -46,6 +46,9 @@ AZURE_OPENAI_API_VERSION: str = _optional("AZURE_OPENAI_API_VERSION", "2024-06-0
 AZURE_SPEECH_KEY: str = _require("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION: str = _require("AZURE_SPEECH_REGION").lower()
 AZURE_SPEECH_LANGUAGE: str = _optional("AZURE_SPEECH_LANGUAGE", "en-US")
+AZURE_SPEECH_VOICE: str = _optional(
+    "AZURE_SPEECH_VOICE", "en-US-AvaMultilingualNeural"
+)
 AZURE_SPEECH_PHRASES: list[str] = [
     phrase.strip()
     for phrase in _optional("AZURE_SPEECH_PHRASES", "").split(",")
@@ -64,3 +67,4 @@ SAMPLE_RATE: int = 16000
 FRAME_MS: int = int(os.getenv("FRAME_MS", "20"))
 FRAME_SAMPLES: int = int(SAMPLE_RATE * FRAME_MS / 1000)
 RMS_SPEECH_START_THRESHOLD: float = float(os.getenv("RMS_SPEECH_START_THRESHOLD", "0.035"))
+BARGE_IN_SUSTAINED_FRAMES: int = int(os.getenv("BARGE_IN_SUSTAINED_FRAMES", "10"))

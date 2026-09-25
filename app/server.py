@@ -18,8 +18,9 @@ from app.asr import (
     build_speech_ready_event,
     build_startup_error_event,
 )
+from app.barge_in import BargeInGate
 from app.config import AZURE_SPEECH_LANGUAGE, AZURE_SPEECH_REGION
-from app.vad import amplify_pcm16, compute_rms, is_speech_start, pcm16_to_float32
+from app.vad import amplify_pcm16, compute_rms, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class VoiceSession:
         self._speech_ready = False
         self._frames_received = 0
         self._last_audio_log_at = 0.0
+        self._barge_in = BargeInGate()
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -111,8 +113,18 @@ class VoiceSession:
             self.active_task.cancel()
         self.active_task = asyncio.create_task(self.process_turn(user_text, turn_id))
 
+    async def _send_agent_audio(self, wav: bytes, turn_id: int) -> None:
+        if not wav or turn_id != self.turn_id:
+            return
+        if not self._barge_in.armed:
+            self._barge_in.arm()
+            logger.info("turn_id=%s barge-in armed after first audio chunk", turn_id)
+        await self.send_wav(wav)
+
     async def process_turn(self, user_text: str, turn_id: int) -> None:
         self.ai_busy = True
+        self._barge_in.reset_for_turn()
+        logger.info("turn_id=%s agent turn started", turn_id)
         try:
             if turn_id != self.turn_id:
                 return
@@ -136,13 +148,13 @@ class VoiceSession:
                     if clause:
                         agent_text_parts.append(clause)
                         wav = await tts.synth_chunk(clause)
-                        await self.send_wav(wav)
+                        await self._send_agent_audio(wav, turn_id)
 
             remainder = clause_buffer.strip()
             if remainder:
                 agent_text_parts.append(remainder)
                 wav = await tts.synth_chunk(remainder)
-                await self.send_wav(wav)
+                await self._send_agent_audio(wav, turn_id)
 
             agent_text = " ".join(agent_text_parts).strip()
             if agent_text and turn_id == self.turn_id:
@@ -157,6 +169,7 @@ class VoiceSession:
             logger.exception("process_turn failed")
             await self.send_json({"type": "error", "message": str(exc)})
         finally:
+            self._barge_in.disarm()
             self.ai_busy = False
             self.active_task = None
 
@@ -190,7 +203,8 @@ class VoiceSession:
             )
             self._last_audio_log_at = now
 
-        if is_speech_start(pcm16_to_float32(boosted)) and self.ai_busy:
+        if self.ai_busy and self._barge_in.register_frame(pcm16_to_float32(boosted)):
+            logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()
 
         self.speech_session.push_audio(boosted)

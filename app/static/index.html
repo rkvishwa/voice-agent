@@ -106,7 +106,8 @@
     const transcriptEl = document.getElementById('transcript');
 
     let ws = null;
-    let audioContext = null;
+    let micContext = null;
+    let playbackContext = null;
     let mediaStream = null;
     let processor = null;
     let muteGain = null;
@@ -271,17 +272,28 @@
       setStatus('Listening (barge-in)', 'connected');
     }
 
+    async function ensurePlaybackContext() {
+      if (!playbackContext) {
+        playbackContext = new AudioContext();
+      }
+      if (playbackContext.state === 'suspended') {
+        await playbackContext.resume();
+      }
+      return playbackContext;
+    }
+
     async function playNext() {
-      if (isPlaying || playbackQueue.length === 0 || !audioContext) return;
+      if (isPlaying || playbackQueue.length === 0) return;
+      const ctx = await ensurePlaybackContext();
       isPlaying = true;
       setStatus('Agent speaking…', 'speaking');
 
       const arrayBuffer = playbackQueue.shift();
       try {
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-        currentSource = audioContext.createBufferSource();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        currentSource = ctx.createBufferSource();
         currentSource.buffer = audioBuffer;
-        currentSource.connect(audioContext.destination);
+        currentSource.connect(ctx.destination);
         currentSource.onended = () => {
           currentSource = null;
           isPlaying = false;
@@ -338,9 +350,13 @@
             } else if (msg.type === 'barge_in') {
               handleBargeIn();
             } else if (msg.type === 'error') {
-              startupFailed = true;
-              showError(msg.message);
-              reject(new Error(msg.message));
+              if (!speechReady) {
+                startupFailed = true;
+                showError(msg.message);
+                reject(new Error(msg.message));
+              } else {
+                showError(msg.message);
+              }
             }
           } else {
             enqueueAudio(event.data);
@@ -377,10 +393,11 @@
 
       setStatus('Requesting microphone access…');
 
-      audioContext = new AudioContext({ sampleRate: TARGET_RATE });
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
+      micContext = new AudioContext({ sampleRate: TARGET_RATE });
+      if (micContext.state === 'suspended') {
+        await micContext.resume();
       }
+      await ensurePlaybackContext();
 
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -395,9 +412,9 @@
       setStatus('Connecting…');
       await connectWebSocket();
 
-      const nativeRate = audioContext.sampleRate;
-      source = audioContext.createMediaStreamSource(mediaStream);
-      processor = audioContext.createScriptProcessor(PROCESSOR_SIZE, 1, 1);
+      const nativeRate = micContext.sampleRate;
+      source = micContext.createMediaStreamSource(mediaStream);
+      processor = micContext.createScriptProcessor(PROCESSOR_SIZE, 1, 1);
 
       processor.onaudioprocess = (e) => {
         if (!running || !speechReady || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -408,11 +425,11 @@
         flushPendingSamples();
       };
 
-      muteGain = audioContext.createGain();
+      muteGain = micContext.createGain();
       muteGain.gain.value = 0;
       source.connect(processor);
       processor.connect(muteGain);
-      muteGain.connect(audioContext.destination);
+      muteGain.connect(micContext.destination);
     }
 
     function stop(options = {}) {
@@ -435,9 +452,13 @@
         mediaStream.getTracks().forEach(t => t.stop());
         mediaStream = null;
       }
-      if (audioContext) {
-        audioContext.close();
-        audioContext = null;
+      if (micContext) {
+        micContext.close();
+        micContext = null;
+      }
+      if (playbackContext) {
+        playbackContext.close();
+        playbackContext = null;
       }
       if (ws) {
         ws.close();
