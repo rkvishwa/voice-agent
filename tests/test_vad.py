@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from app.config import FRAME_SAMPLES, RMS_SPEECH_START_THRESHOLD
-from app.vad import compute_rms, is_speech_start
+from app.vad import amplify_pcm16, compute_rms, is_speech_start
 
 
 def _tone(amplitude: float, samples: int = FRAME_SAMPLES) -> np.ndarray:
@@ -26,6 +26,12 @@ class TestVadThresholds(unittest.TestCase):
         frame = _tone(0.5)
         rms = compute_rms(frame)
         self.assertGreater(rms, RMS_SPEECH_START_THRESHOLD)
+
+    def test_amplify_quiet_pcm(self) -> None:
+        quiet = (np.ones(320, dtype=np.int16) * 100).tobytes()
+        boosted = amplify_pcm16(quiet, min_peak=4000, max_gain=8.0)
+        samples = np.frombuffer(boosted, dtype=np.int16)
+        self.assertGreater(int(np.max(np.abs(samples))), 100)
 
 
 if __name__ == "__main__":

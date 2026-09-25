@@ -98,6 +98,7 @@
     const SEND_SAMPLES = 320; // 20 ms at 16 kHz
     const PROCESSOR_SIZE = 4096; // must be 256|512|1024|2048|4096|8192|16384
     const SPEECH_RMS_THRESHOLD = 0.02;
+    const MIC_GAIN = 3.0;
 
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
@@ -226,6 +227,14 @@
       }
     }
 
+    function applyGain(float32Array, gain) {
+      const out = new Float32Array(float32Array.length);
+      for (let i = 0; i < float32Array.length; i++) {
+        out[i] = Math.max(-1, Math.min(1, float32Array[i] * gain));
+      }
+      return out;
+    }
+
     function float32ToInt16(float32Array) {
       const int16 = new Int16Array(float32Array.length);
       for (let i = 0; i < float32Array.length; i++) {
@@ -235,12 +244,17 @@
       return int16;
     }
 
+    function sendPcmChunk(float32Chunk) {
+      const boosted = applyGain(float32Chunk, MIC_GAIN);
+      const int16 = float32ToInt16(boosted);
+      ws.send(int16.buffer.slice(int16.byteOffset, int16.byteOffset + int16.byteLength));
+    }
+
     function flushPendingSamples() {
       while (pendingSamples.length >= SEND_SAMPLES && ws && ws.readyState === WebSocket.OPEN) {
         const chunk = pendingSamples.slice(0, SEND_SAMPLES);
         pendingSamples = pendingSamples.slice(SEND_SAMPLES);
-        const int16 = float32ToInt16(chunk);
-        ws.send(int16.buffer);
+        sendPcmChunk(chunk);
       }
     }
 
@@ -349,7 +363,7 @@
 
       setStatus('Requesting microphone access…');
 
-      audioContext = new AudioContext();
+      audioContext = new AudioContext({ sampleRate: TARGET_RATE });
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
@@ -357,8 +371,9 @@
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
+          sampleRate: TARGET_RATE,
+          echoCancellation: false,
+          noiseSuppression: false,
           autoGainControl: true,
         },
       });

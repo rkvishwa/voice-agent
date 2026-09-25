@@ -60,6 +60,7 @@ class AzureSpeechSession:
         self._closed = False
         self._recognizer: Optional[speechsdk.SpeechRecognizer] = None
         self._push_stream: Optional[speechsdk.audio.PushAudioInputStream] = None
+        self._bytes_written = 0
 
     def _schedule(self, coro: Awaitable[None]) -> None:
         if self._closed:
@@ -72,6 +73,14 @@ class AzureSpeechSession:
             region=AZURE_SPEECH_REGION,
         )
         speech_config.speech_recognition_language = AZURE_SPEECH_LANGUAGE
+        speech_config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
+            "30000",
+        )
+        speech_config.set_property(
+            speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,
+            "800",
+        )
 
         stream_format = speechsdk.audio.AudioStreamFormat(
             samples_per_second=SAMPLE_RATE,
@@ -91,6 +100,7 @@ class AzureSpeechSession:
             for phrase in AZURE_SPEECH_PHRASES:
                 phrase_list.addPhrase(phrase)
 
+        self._recognizer.session_started.connect(self._handle_session_started)
         self._recognizer.recognizing.connect(self._handle_recognizing)
         self._recognizer.recognized.connect(self._handle_recognized)
         self._recognizer.canceled.connect(self._handle_canceled)
@@ -108,26 +118,42 @@ class AzureSpeechSession:
     def push_audio(self, pcm_bytes: bytes) -> None:
         if self._closed or not self._push_stream or not pcm_bytes:
             return
-        self._push_stream.write(bytes(pcm_bytes))
+        payload = bytes(pcm_bytes)
+        self._push_stream.write(payload)
+        self._bytes_written += len(payload)
+
+    def _handle_session_started(self, evt: speechsdk.SessionEventArgs) -> None:
+        logger.info("Azure Speech session_started id=%s", evt.session_id)
 
     def _handle_recognizing(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
         if self._closed:
             return
-        if evt.result.reason != speechsdk.ResultReason.RecognizingSpeech:
-            return
+        reason = evt.result.reason
         text = evt.result.text.strip()
-        if text:
+        if reason == speechsdk.ResultReason.RecognizingSpeech and text:
+            logger.info("Azure recognizing: %s", text)
             self._schedule(self._on_partial(text))
+        elif reason != speechsdk.ResultReason.RecognizingSpeech:
+            logger.debug("Azure recognizing skipped reason=%s", reason)
 
     def _handle_recognized(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
         if self._closed:
             return
-        if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
-            return
+        reason = evt.result.reason
         text = evt.result.text.strip()
-        if text:
+        if reason == speechsdk.ResultReason.RecognizedSpeech and text:
             logger.info("Azure recognized: %s", text)
             self._schedule(self._on_final(text))
+            return
+        if reason == speechsdk.ResultReason.NoMatch:
+            logger.info("Azure no match (bytes_written=%d)", self._bytes_written)
+        else:
+            logger.info(
+                "Azure recognized event reason=%s text=%r bytes_written=%d",
+                reason,
+                text,
+                self._bytes_written,
+            )
 
     def _handle_canceled(self, evt: speechsdk.SpeechRecognitionCanceledEventArgs) -> None:
         if self._closed:
@@ -162,4 +188,4 @@ class AzureSpeechSession:
             return
         self._closed = True
         await asyncio.to_thread(self._close_sync)
-        logger.info("Azure Speech session closed")
+        logger.info("Azure Speech session closed bytes_written=%d", self._bytes_written)

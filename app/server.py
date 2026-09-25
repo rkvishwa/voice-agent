@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from app import asr, llm, tts
 from app.asr import AzureSpeechSession, build_final_event, build_partial_event
-from app.vad import compute_rms, is_speech_start, pcm16_to_float32
+from app.vad import amplify_pcm16, compute_rms, is_speech_start, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -153,21 +153,25 @@ class VoiceSession:
         if self._frames_received == 1:
             logger.info("first audio frame received bytes=%d", len(pcm_bytes))
 
+        boosted = amplify_pcm16(pcm_bytes)
+
         now = time.monotonic()
         if now - self._last_audio_log_at >= 5.0:
-            rms = compute_rms(frame)
+            rms_in = compute_rms(frame)
+            rms_out = compute_rms(pcm16_to_float32(boosted))
             logger.info(
-                "audio ingress frames=%d last_frame_bytes=%d rms=%.4f",
+                "audio ingress frames=%d bytes=%d rms_in=%.4f rms_out=%.4f",
                 self._frames_received,
                 len(pcm_bytes),
-                rms,
+                rms_in,
+                rms_out,
             )
             self._last_audio_log_at = now
 
-        if is_speech_start(frame) and self.ai_busy:
+        if is_speech_start(pcm16_to_float32(boosted)) and self.ai_busy:
             await self.handle_barge_in()
 
-        self.speech_session.push_audio(pcm_bytes)
+        self.speech_session.push_audio(boosted)
 
     async def close(self) -> None:
         self._closed = True
