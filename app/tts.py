@@ -41,6 +41,7 @@ AZURE_TTS_VOICES: list[dict[str, str]] = [
 
 _kokoro: Optional[Kokoro] = None
 _kokoro_create_kwargs: dict = {}
+_azure_synthesizers: dict[str, speechsdk.SpeechSynthesizer] = {}
 
 
 def pick_kokoro_voice(preferred: tuple[str, ...], available: set[str]) -> str:
@@ -252,9 +253,12 @@ def _synth_kokoro_sync(text: str, voice: str, speed: float) -> bytes:
     return buffer.getvalue()
 
 
-def _synth_azure_sync(text: str, voice: str, speed: float) -> bytes:
+def _get_azure_synthesizer(voice: str) -> speechsdk.SpeechSynthesizer:
     if voice not in azure_voice_ids():
         raise RuntimeError(f"Azure TTS voice not allowed: {voice}")
+    cached = _azure_synthesizers.get(voice)
+    if cached is not None:
+        return cached
 
     speech_config = speechsdk.SpeechConfig(
         subscription=AZURE_SPEECH_KEY,
@@ -264,11 +268,16 @@ def _synth_azure_sync(text: str, voice: str, speed: float) -> bytes:
     speech_config.set_speech_synthesis_output_format(
         speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
     )
-
     synthesizer = speechsdk.SpeechSynthesizer(
         speech_config=speech_config,
         audio_config=None,
     )
+    _azure_synthesizers[voice] = synthesizer
+    return synthesizer
+
+
+def _synth_azure_sync(text: str, voice: str, speed: float) -> bytes:
+    synthesizer = _get_azure_synthesizer(voice)
     ssml = build_azure_ssml(text, voice, speed)
     result = synthesizer.speak_ssml_async(ssml).get()
     return audio_from_synthesis_result(result)
@@ -290,7 +299,7 @@ async def synth_chunk(
     cleaned = text.strip()
     if not cleaned:
         return b""
-    _, _, normalized_speed = validate_tts_config(backend, voice, speed)
+    normalized_speed = validate_speed(speed)
     return await asyncio.to_thread(
         _synth_sync, cleaned, backend, voice, normalized_speed
     )

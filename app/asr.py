@@ -13,6 +13,7 @@ from app.config import (
     AZURE_SPEECH_PHRASES,
     AZURE_SPEECH_REGION,
     SAMPLE_RATE,
+    STT_SEGMENTATION_SILENCE_MS,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ class AzureSpeechSession:
         )
         speech_config.set_property(
             speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,
-            "800",
+            str(STT_SEGMENTATION_SILENCE_MS),
         )
 
         stream_format = speechsdk.audio.AudioStreamFormat(

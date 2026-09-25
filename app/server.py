@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 from pathlib import Path
 
@@ -23,10 +22,13 @@ from app.barge_in import BargeInGate
 from app.config import (
     AZURE_SPEECH_LANGUAGE,
     AZURE_SPEECH_REGION,
+    RMS_SPEECH_START_THRESHOLD,
     SAMPLE_RATE,
+    SPECULATIVE_SILENCE_MS,
     TTS_BACKEND,
     TTS_SPEED,
 )
+from app.turn_text import pop_next_speech_chunk, utterances_match
 from app.echo_guard import is_likely_agent_echo
 from app.tts import (
     TtsBackend,
@@ -40,8 +42,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-CLAUSE_DELIMITERS = re.compile(r"([.,!?\n])")
 
 # ~1s of PCM16 silence at 16 kHz to flush Azure Speech utterance boundaries.
 STT_FLUSH_SILENCE_BYTES = int(SAMPLE_RATE * 1.0) * 2
@@ -84,6 +84,12 @@ class VoiceSession:
         self._agent_audio_open: bool = False
         self._playback_epoch: int = 0
         self._recent_agent_text: str | None = None
+        self._latest_partial_text: str = ""
+        self._last_voice_at: float = 0.0
+        self._turn_confirmed: bool = True
+        self._speculative_user_text: str | None = None
+        self._turn_started_at: float = 0.0
+        self._logged_first_audio_for_turn: int | None = None
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -109,7 +115,23 @@ class VoiceSession:
         if wav_bytes and not self._closed:
             await self.websocket.send_bytes(wav_bytes)
 
-    async def cancel_active_task(self) -> None:
+    def _rollback_speculative_user_message(self) -> None:
+        if (
+            self.history
+            and self.history[-1].get("role") == "user"
+            and self._speculative_user_text
+            and utterances_match(
+                self.history[-1].get("content", ""),
+                self._speculative_user_text,
+            )
+        ):
+            self.history.pop()
+
+    async def cancel_active_task(self, rollback_speculative: bool = False) -> None:
+        if rollback_speculative:
+            self._rollback_speculative_user_message()
+            self._speculative_user_text = None
+            self._turn_confirmed = True
         if self.active_task and not self.active_task.done():
             self.active_task.cancel()
             try:
@@ -118,6 +140,9 @@ class VoiceSession:
                 pass
         self.active_task = None
         self.ai_busy = False
+
+    async def _cancel_speculative_turn(self) -> None:
+        await self.cancel_active_task(rollback_speculative=True)
 
     def _stt_results_suppressed(self) -> bool:
         if self._stt_muted:
@@ -157,12 +182,13 @@ class VoiceSession:
 
     async def handle_barge_in(self) -> None:
         self._agent_audio_open = False
+        self._latest_partial_text = ""
         self._stt_muted = True
         self._flush_stt_silence()
         self._stt_muted = False
         self._stt_ignore_finals_until = time.monotonic() + 0.25
         self.turn_id += 1
-        await self.cancel_active_task()
+        await self.cancel_active_task(rollback_speculative=True)
         await self.send_json({"type": "barge_in"})
 
     def apply_tts_config(
@@ -184,6 +210,18 @@ class VoiceSession:
     async def _on_speech_partial(self, text: str) -> None:
         if self._closed or self._stt_results_suppressed():
             return
+        self._latest_partial_text = text
+        self._last_voice_at = time.monotonic()
+        if (
+            self._speculative_user_text
+            and not utterances_match(self._speculative_user_text, text)
+        ):
+            logger.info(
+                "partial revised; cancel speculative turn was=%r now=%r",
+                self._speculative_user_text[:80],
+                text[:80],
+            )
+            await self._cancel_speculative_turn()
         await self.send_json(build_partial_event(text, self.turn_id))
 
     async def _on_speech_final(self, text: str) -> None:
@@ -197,18 +235,90 @@ class VoiceSession:
             return
         self._recent_agent_text = None
         turn_id = self.turn_id
+        final_at = time.monotonic()
+        logger.info(
+            "stt_final turn_id=%s t=%.3f text=%r",
+            turn_id,
+            final_at,
+            text[:120],
+        )
+        self._latest_partial_text = ""
         await self.send_json(build_final_event(text, turn_id))
-        self.launch_turn(text, turn_id)
+
+        speculative_active = (
+            self.active_task is not None
+            and not self.active_task.done()
+            and self._speculative_user_text is not None
+        )
+        if speculative_active and utterances_match(self._speculative_user_text, text):
+            self._turn_confirmed = True
+            self._speculative_user_text = None
+            if self.history and self.history[-1].get("role") == "user":
+                self.history[-1]["content"] = text
+            logger.info(
+                "speculative_turn_confirmed turn_id=%s dt_since_start=%.3fs",
+                turn_id,
+                final_at - self._turn_started_at if self._turn_started_at else 0.0,
+            )
+            return
+
+        if speculative_active:
+            logger.info("final mismatched speculative; restarting turn")
+            await self._cancel_speculative_turn()
+
+        self.launch_turn(text, turn_id, speculative=False)
 
     async def _on_speech_error(self, message: str) -> None:
         if self._closed:
             return
         await self.send_json({"type": "error", "message": message})
 
-    def launch_turn(self, user_text: str, turn_id: int) -> None:
+    def launch_turn(
+        self,
+        user_text: str,
+        turn_id: int,
+        *,
+        speculative: bool = False,
+    ) -> None:
         if self.active_task and not self.active_task.done():
             self.active_task.cancel()
-        self.active_task = asyncio.create_task(self.process_turn(user_text, turn_id))
+        self._turn_confirmed = not speculative
+        self._speculative_user_text = user_text if speculative else None
+        self._turn_started_at = time.monotonic()
+        self._logged_first_audio_for_turn = None
+        if speculative:
+            logger.info(
+                "speculative_turn_start turn_id=%s t=%.3f text=%r",
+                turn_id,
+                self._turn_started_at,
+                user_text[:120],
+            )
+        self.active_task = asyncio.create_task(
+            self.process_turn(user_text, turn_id, speculative=speculative)
+        )
+
+    def _maybe_start_speculative_turn(self) -> None:
+        if self._stt_results_suppressed() or self._closed:
+            return
+        partial = self._latest_partial_text.strip()
+        if not partial:
+            return
+        if self._speculative_user_text is not None:
+            return
+        if self.active_task and not self.active_task.done():
+            return
+        now = time.monotonic()
+        silence_ms = (now - self._last_voice_at) * 1000.0
+        if silence_ms < SPECULATIVE_SILENCE_MS:
+            return
+        self.launch_turn(partial, self.turn_id, speculative=True)
+
+    async def _await_turn_confirmed(self, turn_id: int) -> bool:
+        while not self._turn_confirmed:
+            if turn_id != self.turn_id:
+                return False
+            await asyncio.sleep(0.02)
+        return turn_id == self.turn_id
 
     async def _send_agent_audio(self, wav: bytes, turn_id: int, caption: str = "") -> bool:
         if not wav or turn_id != self.turn_id:
@@ -220,6 +330,14 @@ class VoiceSession:
         if not self._barge_in.armed:
             self._barge_in.arm()
             logger.info("turn_id=%s barge-in armed after first audio chunk", turn_id)
+        if self._logged_first_audio_for_turn != turn_id:
+            self._logged_first_audio_for_turn = turn_id
+            logger.info(
+                "first_audio_sent turn_id=%s t=%.3f dt_since_turn=%.3fs",
+                turn_id,
+                time.monotonic(),
+                time.monotonic() - self._turn_started_at if self._turn_started_at else 0.0,
+            )
         caption = caption.strip()
         if caption:
             await self.send_json(
@@ -233,16 +351,24 @@ class VoiceSession:
         await self.send_wav(wav)
         return True
 
-    async def process_turn(self, user_text: str, turn_id: int) -> None:
+    async def process_turn(
+        self,
+        user_text: str,
+        turn_id: int,
+        *,
+        speculative: bool = False,
+    ) -> None:
         self.ai_busy = True
         self._barge_in.reset_for_turn()
         logger.info(
-            "turn_id=%s agent turn started tts=%s voice=%s speed=%s",
+            "turn_id=%s agent turn started speculative=%s tts=%s voice=%s speed=%s",
             turn_id,
+            speculative,
             self.tts_backend,
             self.tts_voice,
             self.tts_speed,
         )
+        first_token_logged = False
         try:
             if turn_id != self.turn_id:
                 return
@@ -251,41 +377,68 @@ class VoiceSession:
 
             agent_text_parts: list[str] = []
             clause_buffer = ""
+            pending_clauses: list[str] = []
             sent_audio = False
+            first_chunk_pending = True
 
-            async for token in llm.stream_llm_response(self.history):
-                if turn_id != self.turn_id:
+            async def flush_clause(clause: str) -> None:
+                nonlocal sent_audio
+                if not clause:
                     return
-                clause_buffer += token
-                while True:
-                    match = CLAUSE_DELIMITERS.search(clause_buffer)
-                    if not match:
-                        break
-                    end = match.end()
-                    clause = clause_buffer[:end].strip()
-                    clause_buffer = clause_buffer[end:]
-                    if clause:
-                        agent_text_parts.append(clause)
-                        wav = await tts.synth_chunk(
-                            clause,
-                            self.tts_backend,
-                            self.tts_voice,
-                            self.tts_speed,
-                        )
-                        if await self._send_agent_audio(wav, turn_id, clause):
-                            sent_audio = True
-
-            remainder = clause_buffer.strip()
-            if remainder:
-                agent_text_parts.append(remainder)
+                if not await self._await_turn_confirmed(turn_id):
+                    return
+                agent_text_parts.append(clause)
                 wav = await tts.synth_chunk(
-                    remainder,
+                    clause,
                     self.tts_backend,
                     self.tts_voice,
                     self.tts_speed,
                 )
-                if await self._send_agent_audio(wav, turn_id, remainder):
+                if await self._send_agent_audio(wav, turn_id, clause):
                     sent_audio = True
+
+            async def drain_pending_clauses() -> None:
+                while pending_clauses:
+                    if turn_id != self.turn_id:
+                        return
+                    clause = pending_clauses.pop(0)
+                    await flush_clause(clause)
+
+            async for token in llm.stream_llm_response(self.history):
+                if turn_id != self.turn_id:
+                    return
+                if not first_token_logged:
+                    first_token_logged = True
+                    logger.info(
+                        "first_llm_token turn_id=%s t=%.3f dt_since_turn=%.3fs",
+                        turn_id,
+                        time.monotonic(),
+                        time.monotonic() - self._turn_started_at
+                        if self._turn_started_at
+                        else 0.0,
+                    )
+                clause_buffer += token
+                while True:
+                    clause, clause_buffer, first_chunk_pending = pop_next_speech_chunk(
+                        clause_buffer,
+                        first_chunk_pending=first_chunk_pending,
+                    )
+                    if not clause:
+                        break
+                    if self._turn_confirmed:
+                        await flush_clause(clause)
+                    else:
+                        pending_clauses.append(clause)
+                await drain_pending_clauses()
+
+            if not self._turn_confirmed and speculative:
+                if not await self._await_turn_confirmed(turn_id):
+                    return
+            await drain_pending_clauses()
+
+            remainder = clause_buffer.strip()
+            if remainder:
+                await flush_clause(remainder)
 
             agent_text = " ".join(agent_text_parts).strip()
             if agent_text and turn_id == self.turn_id:
@@ -310,6 +463,8 @@ class VoiceSession:
                     )
 
         except asyncio.CancelledError:
+            if speculative and self._speculative_user_text:
+                self._rollback_speculative_user_message()
             raise
         except Exception as exc:
             logger.exception("process_turn failed")
@@ -319,6 +474,8 @@ class VoiceSession:
             self._agent_audio_open = False
             self.ai_busy = False
             self.active_task = None
+            if speculative and self._speculative_user_text is None:
+                self._turn_confirmed = True
 
     async def handle_audio_frame(self, pcm_bytes: bytes) -> None:
         if not self._speech_ready:
@@ -351,6 +508,12 @@ class VoiceSession:
             self._last_audio_log_at = now
 
         boosted_frame = pcm16_to_float32(boosted)
+        rms = compute_rms(boosted_frame)
+        if rms > RMS_SPEECH_START_THRESHOLD:
+            self._last_voice_at = now
+        elif self._latest_partial_text.strip():
+            self._maybe_start_speculative_turn()
+
         if self.ai_busy and self._barge_in.register_frame(boosted_frame):
             logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()

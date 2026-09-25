@@ -77,3 +77,8 @@ FRAME_MS: int = int(os.getenv("FRAME_MS", "20"))
 FRAME_SAMPLES: int = int(SAMPLE_RATE * FRAME_MS / 1000)
 RMS_SPEECH_START_THRESHOLD: float = float(os.getenv("RMS_SPEECH_START_THRESHOLD", "0.035"))
 BARGE_IN_SUSTAINED_FRAMES: int = int(os.getenv("BARGE_IN_SUSTAINED_FRAMES", "10"))
+
+# Azure STT end-of-utterance silence before a final transcript (ms).
+STT_SEGMENTATION_SILENCE_MS: int = int(os.getenv("STT_SEGMENTATION_SILENCE_MS", "400"))
+# Local RMS silence after a partial before speculative LLM start (ms).
+SPECULATIVE_SILENCE_MS: int = int(os.getenv("SPECULATIVE_SILENCE_MS", "200"))

@@ -1,7 +1,7 @@
 """Tests for TTS helpers and validation."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from azure.cognitiveservices.speech import ResultReason
 
@@ -13,6 +13,7 @@ from app.tts import (
     build_azure_ssml,
     escape_ssml_text,
     pick_kokoro_voice,
+    synth_chunk,
     validate_speed,
     validate_tts_config,
 )
@@ -91,6 +92,25 @@ class TestValidateTtsConfig(unittest.TestCase):
         self.assertEqual(backend, "azure")
         self.assertEqual(voice, "en-US-AvaMultilingualNeural")
         self.assertEqual(speed, 1.1)
+
+
+class TestSynthChunkHotPath(unittest.IsolatedAsyncioTestCase):
+    async def test_synth_chunk_does_not_call_validate_tts_config(self) -> None:
+        with patch("app.tts.validate_tts_config") as mock_validate:
+            with patch("app.tts.list_kokoro_voices") as mock_list:
+                with patch(
+                    "app.tts.asyncio.to_thread",
+                    new=AsyncMock(return_value=b"RIFF"),
+                ):
+                    result = await synth_chunk(
+                        "hello",
+                        "azure",
+                        "en-US-AvaMultilingualNeural",
+                        1.05,
+                    )
+                self.assertEqual(result, b"RIFF")
+            mock_list.assert_not_called()
+            mock_validate.assert_not_called()
 
 
 class TestAudioFromSynthesisResult(unittest.TestCase):
