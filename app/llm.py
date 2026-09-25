@@ -13,7 +13,9 @@ from app.config import (
 
 SYSTEM_PROMPT = (
     "You are a natural, concise conversational voice assistant. "
-    "Limit answers to 1-2 spoken sentences."
+    "Limit answers to 1-2 spoken sentences. "
+    "Reply in plain spoken language only: no markdown, asterisks, bullets, "
+    "headings, or formatting symbols."
 )
 
 _client = AsyncAzureOpenAI(

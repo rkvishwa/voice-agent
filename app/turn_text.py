@@ -7,6 +7,28 @@ CLAUSE_DELIMITERS = re.compile(r"([.,!?\n])")
 FIRST_CHUNK_MAX_WORDS = 6
 FIRST_CHUNK_MAX_CHARS = 40
 
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+_MD_ITALIC = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
+
+
+def strip_spoken_markup(text: str) -> str:
+    """Remove markdown formatting so TTS and captions read natural speech."""
+    if not text:
+        return ""
+
+    cleaned = text
+    cleaned = _MD_LINK.sub(r"\1", cleaned)
+    cleaned = _MD_BOLD.sub(lambda m: m.group(1) or m.group(2) or "", cleaned)
+    cleaned = _MD_ITALIC.sub(lambda m: m.group(1) or m.group(2) or "", cleaned)
+    cleaned = cleaned.replace("`", "")
+    cleaned = re.sub(r"^\s*#{1,6}\s+", "", cleaned)
+    cleaned = re.sub(r"^\s*[-*]\s+", "", cleaned)
+    cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned)
+    cleaned = cleaned.replace("*", "").replace("_", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
 
 def normalize_utterance(text: str) -> str:
     """Compare STT partial vs final: ignore case and trailing punctuation."""

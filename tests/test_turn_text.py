@@ -5,6 +5,7 @@ import unittest
 from app.turn_text import (
     normalize_utterance,
     pop_next_speech_chunk,
+    strip_spoken_markup,
     utterances_match,
 )
 
@@ -51,3 +52,21 @@ class TestPopNextSpeechChunk(unittest.TestCase):
 class TestNormalize(unittest.TestCase):
     def test_strips_punctuation(self) -> None:
         self.assertEqual(normalize_utterance("Hello, world!"), "hello world")
+
+
+class TestStripSpokenMarkup(unittest.TestCase):
+    def test_bold_heading_phrase(self) -> None:
+        self.assertEqual(
+            strip_spoken_markup("**Global Health Concerns**"),
+            "Global Health Concerns",
+        )
+
+    def test_split_marker_chunk(self) -> None:
+        self.assertEqual(strip_spoken_markup("**Global"), "Global")
+        self.assertEqual(strip_spoken_markup("Concerns**"), "Concerns")
+
+    def test_markdown_link(self) -> None:
+        self.assertEqual(
+            strip_spoken_markup("See [WHO site](https://who.int) for details."),
+            "See WHO site for details.",
+        )

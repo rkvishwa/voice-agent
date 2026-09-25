@@ -28,7 +28,7 @@ from app.config import (
     TTS_BACKEND,
     TTS_SPEED,
 )
-from app.turn_text import pop_next_speech_chunk, utterances_match
+from app.turn_text import pop_next_speech_chunk, strip_spoken_markup, utterances_match
 from app.echo_guard import is_likely_agent_echo
 from app.tts import (
     TtsBackend,
@@ -385,6 +385,9 @@ class VoiceSession:
 
             async def flush_clause(clause: str) -> None:
                 nonlocal sent_audio
+                if not clause:
+                    return
+                clause = strip_spoken_markup(clause)
                 if not clause:
                     return
                 if not await self._await_turn_confirmed(turn_id):
