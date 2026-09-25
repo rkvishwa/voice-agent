@@ -76,6 +76,10 @@ SAMPLE_RATE: int = 16000
 FRAME_MS: int = int(os.getenv("FRAME_MS", "20"))
 FRAME_SAMPLES: int = int(SAMPLE_RATE * FRAME_MS / 1000)
 RMS_SPEECH_START_THRESHOLD: float = float(os.getenv("RMS_SPEECH_START_THRESHOLD", "0.035"))
+# Lower threshold for interrupt detection on raw mic during agent playback (pre-amplify).
+RMS_BARGE_IN_PLAYBACK_THRESHOLD: float = float(
+    os.getenv("RMS_BARGE_IN_PLAYBACK_THRESHOLD", "0.022")
+)
 BARGE_IN_SUSTAINED_FRAMES: int = int(os.getenv("BARGE_IN_SUSTAINED_FRAMES", "10"))
 
 # Azure STT end-of-utterance silence before a final transcript (ms).

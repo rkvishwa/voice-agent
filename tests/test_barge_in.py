@@ -5,13 +5,21 @@ import unittest
 import numpy as np
 
 from app.barge_in import BargeInGate
-from app.config import BARGE_IN_SUSTAINED_FRAMES, RMS_SPEECH_START_THRESHOLD
+from app.config import BARGE_IN_SUSTAINED_FRAMES, RMS_BARGE_IN_PLAYBACK_THRESHOLD
 
 
 class TestBargeInGate(unittest.TestCase):
     def _loud_frame(self) -> np.ndarray:
-        level = RMS_SPEECH_START_THRESHOLD + 0.1
+        level = RMS_BARGE_IN_PLAYBACK_THRESHOLD + 0.1
         return np.full(320, level, dtype=np.float32)
+
+    def test_quiet_bleed_below_playback_threshold(self) -> None:
+        gate = BargeInGate()
+        gate.arm()
+        bleed = RMS_BARGE_IN_PLAYBACK_THRESHOLD * 0.5
+        quiet = np.full(320, bleed, dtype=np.float32)
+        for _ in range(BARGE_IN_SUSTAINED_FRAMES + 5):
+            self.assertFalse(gate.register_frame(quiet))
 
     def _quiet_frame(self) -> np.ndarray:
         return np.zeros(320, dtype=np.float32)

@@ -172,6 +172,7 @@ class VoiceSession:
                 self._playback_epoch,
             )
             return
+        self._barge_in.disarm()
         self._flush_stt_silence()
         self._stt_muted = False
         self._stt_ignore_finals_until = time.monotonic() + 0.4
@@ -183,6 +184,7 @@ class VoiceSession:
     async def handle_barge_in(self) -> None:
         self._agent_audio_open = False
         self._latest_partial_text = ""
+        self._barge_in.disarm()
         self._stt_muted = True
         self._flush_stt_silence()
         self._stt_muted = False
@@ -369,6 +371,7 @@ class VoiceSession:
             self.tts_speed,
         )
         first_token_logged = False
+        sent_audio = False
         try:
             if turn_id != self.turn_id:
                 return
@@ -378,7 +381,6 @@ class VoiceSession:
             agent_text_parts: list[str] = []
             clause_buffer = ""
             pending_clauses: list[str] = []
-            sent_audio = False
             first_chunk_pending = True
 
             async def flush_clause(clause: str) -> None:
@@ -470,7 +472,8 @@ class VoiceSession:
             logger.exception("process_turn failed")
             await self.send_json({"type": "error", "message": str(exc)})
         finally:
-            self._barge_in.disarm()
+            if not sent_audio:
+                self._barge_in.disarm()
             self._agent_audio_open = False
             self.ai_busy = False
             self.active_task = None
@@ -489,10 +492,9 @@ class VoiceSession:
         if self._frames_received == 1:
             logger.info("first audio frame received bytes=%d", len(pcm_bytes))
 
-        boosted = amplify_pcm16(pcm_bytes)
-
         now = time.monotonic()
         if now - self._last_audio_log_at >= 5.0:
+            boosted = amplify_pcm16(pcm_bytes)
             boosted_frame = pcm16_to_float32(boosted)
             rms_in = compute_rms(frame)
             rms_out = compute_rms(boosted_frame)
@@ -507,14 +509,7 @@ class VoiceSession:
             )
             self._last_audio_log_at = now
 
-        boosted_frame = pcm16_to_float32(boosted)
-        rms = compute_rms(boosted_frame)
-        if rms > RMS_SPEECH_START_THRESHOLD:
-            self._last_voice_at = now
-        elif self._latest_partial_text.strip():
-            self._maybe_start_speculative_turn()
-
-        if self.ai_busy and self._barge_in.register_frame(boosted_frame):
+        if self._barge_in.armed and self._barge_in.register_frame(frame):
             logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()
             return
@@ -522,10 +517,19 @@ class VoiceSession:
         if self._stt_muted:
             return
 
+        boosted = amplify_pcm16(pcm_bytes)
+        boosted_frame = pcm16_to_float32(boosted)
+        rms = compute_rms(boosted_frame)
+        if rms > RMS_SPEECH_START_THRESHOLD:
+            self._last_voice_at = now
+        elif self._latest_partial_text.strip():
+            self._maybe_start_speculative_turn()
+
         self.speech_session.push_audio(boosted)
 
     async def close(self) -> None:
         self._closed = True
+        self._barge_in.disarm()
         await self.cancel_active_task()
         await self.speech_session.close()
 

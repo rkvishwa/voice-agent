@@ -436,6 +436,11 @@
       ws.send(int16.buffer.slice(int16.byteOffset, int16.byteOffset + int16.byteLength));
     }
 
+    function sendRawPcmChunk(float32Chunk) {
+      const int16 = float32ToInt16(float32Chunk);
+      ws.send(int16.buffer.slice(int16.byteOffset, int16.byteOffset + int16.byteLength));
+    }
+
     function agentAudible() {
       if (isPlaying || playbackQueue.length > 0 || inEchoTail) {
         return true;
@@ -448,6 +453,20 @@
 
     function micUploadAllowed() {
       return !agentAudible();
+    }
+
+    function flushMicChunks() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const duringPlayback = agentAudible();
+      while (pendingSamples.length >= SEND_SAMPLES) {
+        const chunk = pendingSamples.slice(0, SEND_SAMPLES);
+        pendingSamples = pendingSamples.slice(SEND_SAMPLES);
+        if (duringPlayback) {
+          sendRawPcmChunk(chunk);
+        } else {
+          sendPcmChunk(chunk);
+        }
+      }
     }
 
     function cancelEchoTail() {
@@ -505,14 +524,9 @@
 
     function flushPendingSamples() {
       if (!micUploadAllowed()) {
-        pendingSamples = new Float32Array(0);
         return;
       }
-      while (pendingSamples.length >= SEND_SAMPLES && ws && ws.readyState === WebSocket.OPEN) {
-        const chunk = pendingSamples.slice(0, SEND_SAMPLES);
-        pendingSamples = pendingSamples.slice(SEND_SAMPLES);
-        sendPcmChunk(chunk);
-      }
+      flushMicChunks();
     }
 
     function triggerClientBargeIn() {
@@ -898,12 +912,13 @@
         const input = e.inputBuffer.getChannelData(0);
         const rms = computeRms(input);
         maybeClientBargeIn(rms);
+        const atTarget = resampleStateful(input, nativeRate, TARGET_RATE);
+        pendingSamples = concatFloat32(pendingSamples, atTarget);
         if (agentAudible()) {
+          flushMicChunks();
           return;
         }
         updateMicStatus(rms);
-        const atTarget = resampleStateful(input, nativeRate, TARGET_RATE);
-        pendingSamples = concatFloat32(pendingSamples, atTarget);
         flushPendingSamples();
       };
 

@@ -1,6 +1,9 @@
 """Barge-in gating: only interrupt the agent after playback has started."""
 
-from app.config import BARGE_IN_SUSTAINED_FRAMES, RMS_SPEECH_START_THRESHOLD
+from app.config import (
+    BARGE_IN_SUSTAINED_FRAMES,
+    RMS_BARGE_IN_PLAYBACK_THRESHOLD,
+)
 from app.vad import compute_rms
 
 
@@ -29,7 +32,7 @@ class BargeInGate:
         if not self.armed:
             return False
 
-        if compute_rms(audio_frame) > RMS_SPEECH_START_THRESHOLD:
+        if compute_rms(audio_frame) > RMS_BARGE_IN_PLAYBACK_THRESHOLD:
             self._speech_frames += 1
         else:
             self._speech_frames = 0
