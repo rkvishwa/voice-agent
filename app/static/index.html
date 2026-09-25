@@ -62,6 +62,21 @@
     .msg.user .role { color: #8ab4f8; }
     .msg.agent .role { color: #81c995; }
     .msg.error .role { color: #f28b82; }
+    .msg.partial .role { color: #8ab4f8; }
+    .msg.partial .text {
+      font-size: 0.95rem;
+      color: #bdc1c6;
+      font-style: italic;
+    }
+    .msg.partial .badge {
+      display: inline-block;
+      margin-left: 0.5rem;
+      font-size: 0.65rem;
+      color: #9aa0a6;
+      font-style: normal;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
     .msg .text { font-size: 0.95rem; }
   </style>
 </head>
@@ -99,6 +114,7 @@
     const playbackQueue = [];
     let currentSource = null;
     let isPlaying = false;
+    let liveCaptionEl = null;
 
     function setStatus(text, cls = '') {
       statusEl.textContent = text;
@@ -111,10 +127,39 @@
       console.error(message);
     }
 
+    function escapeHtml(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function clearLiveCaption() {
+      if (liveCaptionEl) {
+        liveCaptionEl.remove();
+        liveCaptionEl = null;
+      }
+    }
+
+    function updatePartialCaption(text) {
+      const safe = escapeHtml(text);
+      if (!liveCaptionEl) {
+        liveCaptionEl = document.createElement('div');
+        liveCaptionEl.className = 'msg user partial';
+        liveCaptionEl.innerHTML =
+          '<div class="role">you<span class="badge">live</span></div><div class="text"></div>';
+        transcriptEl.appendChild(liveCaptionEl);
+      }
+      liveCaptionEl.querySelector('.text').textContent = text;
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function finalizeUserTranscript(text) {
+      clearLiveCaption();
+      addTranscript('user', text);
+    }
+
     function addTranscript(role, text) {
       const div = document.createElement('div');
       div.className = `msg ${role}`;
-      const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const safe = escapeHtml(text);
       div.innerHTML = `<div class="role">${role}</div><div class="text">${safe}</div>`;
       transcriptEl.appendChild(div);
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -181,6 +226,7 @@
       }
       playbackQueue.length = 0;
       isPlaying = false;
+      clearLiveCaption();
       setStatus('Listening (barge-in)', 'connected');
     }
 
@@ -231,8 +277,14 @@
         ws.onmessage = (event) => {
           if (typeof event.data === 'string') {
             const msg = JSON.parse(event.data);
-            if (msg.type === 'transcript') {
-              addTranscript(msg.role, msg.text);
+            if (msg.type === 'transcript_partial') {
+              updatePartialCaption(msg.text);
+            } else if (msg.type === 'transcript') {
+              if (msg.role === 'user' && msg.final) {
+                finalizeUserTranscript(msg.text);
+              } else {
+                addTranscript(msg.role, msg.text);
+              }
             } else if (msg.type === 'barge_in') {
               handleBargeIn();
             } else if (msg.type === 'error') {
@@ -263,6 +315,7 @@
       startBtn.disabled = true;
       stopBtn.disabled = false;
       transcriptEl.innerHTML = '';
+      clearLiveCaption();
       pendingSamples = new Float32Array(0);
       resamplePhase = 0;
 
@@ -278,6 +331,7 @@
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         },
       });
 
@@ -308,6 +362,7 @@
       resamplePhase = 0;
 
       handleBargeIn();
+      clearLiveCaption();
 
       if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null; }
       if (source) { source.disconnect(); source = null; }

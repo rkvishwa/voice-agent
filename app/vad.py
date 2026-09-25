@@ -139,6 +139,18 @@ class TurnDetector:
             return np.array([], dtype=np.float32)
         return np.concatenate(self.audio_buffer)
 
+    def active_duration(self) -> float:
+        """Duration of the in-progress utterance in seconds."""
+        if not self.in_speech:
+            return 0.0
+        return self._buffer_duration()
+
+    def active_snapshot(self) -> np.ndarray:
+        """Thread-safe copy of audio accumulated during the active utterance."""
+        if not self.in_speech or not self.audio_buffer:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(self.audio_buffer).copy()
+
     def reset(self) -> None:
         """Clear active turn state while keeping the idle pre-roll buffer."""
         self.in_speech = False

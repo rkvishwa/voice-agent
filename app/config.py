@@ -49,8 +49,21 @@ END_SILENCE_MS: int = int(os.getenv("END_SILENCE_MS", "650"))
 SILENCE_FRAMES_FOR_END: int = max(1, int(END_SILENCE_MS / FRAME_MS))
 MIN_TURN_SECONDS: float = float(os.getenv("MIN_TURN_SECONDS", "0.4"))
 
-# ASR (Faster-Whisper)
-ASR_MODEL: str = os.getenv("ASR_MODEL", "small.en")
-ASR_BEAM_SIZE: int = int(os.getenv("ASR_BEAM_SIZE", "3"))
-ASR_CPU_THREADS: int = int(os.getenv("ASR_CPU_THREADS", "2"))
+# ASR preview (live captions while speaking)
+ASR_PREVIEW_MODEL: str = os.getenv("ASR_PREVIEW_MODEL", "small.en")
+ASR_PREVIEW_BEAM_SIZE: int = int(os.getenv("ASR_PREVIEW_BEAM_SIZE", "1"))
+ASR_PREVIEW_INTERVAL_SEC: float = float(os.getenv("ASR_PREVIEW_INTERVAL_SEC", "1.0"))
+ASR_PREVIEW_MIN_SECONDS: float = float(os.getenv("ASR_PREVIEW_MIN_SECONDS", "0.8"))
+
+# ASR final (higher accuracy after end-of-turn)
+ASR_FINAL_MODEL: str = os.getenv("ASR_FINAL_MODEL", "medium.en")
+ASR_FINAL_BEAM_SIZE: int = int(os.getenv("ASR_FINAL_BEAM_SIZE", "5"))
+
+# Shared ASR settings
+ASR_CPU_THREADS: int = int(os.getenv("ASR_CPU_THREADS", "4"))
 ASR_COMPUTE_TYPE: str = os.getenv("ASR_COMPUTE_TYPE", "int8")
+ASR_INITIAL_PROMPT: str = os.getenv("ASR_INITIAL_PROMPT", "").strip()
+
+# Legacy aliases (preview model)
+ASR_MODEL: str = os.getenv("ASR_MODEL", ASR_PREVIEW_MODEL)
+ASR_BEAM_SIZE: int = int(os.getenv("ASR_BEAM_SIZE", str(ASR_PREVIEW_BEAM_SIZE)))

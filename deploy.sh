@@ -107,7 +107,7 @@ echo "==> Python dependencies installed"
 # ---------------------------------------------------------------------------
 bash scripts/download_models.sh
 
-echo "==> Prefetching Faster-Whisper ${ASR_MODEL:-small.en} model (first run may take a minute)"
+echo "==> Prefetching Faster-Whisper models (${ASR_PREVIEW_MODEL:-small.en} + ${ASR_FINAL_MODEL:-medium.en})"
 PYTHONPATH="$SCRIPT_DIR" python "$SCRIPT_DIR/scripts/prefetch_asr.py"
 
 # ---------------------------------------------------------------------------
