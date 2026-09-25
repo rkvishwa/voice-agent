@@ -107,12 +107,8 @@ echo "==> Python dependencies installed"
 # ---------------------------------------------------------------------------
 bash scripts/download_models.sh
 
-echo "==> Prefetching Faster-Whisper base.en model (first run may take a minute)"
-python -c "
-from faster_whisper import WhisperModel
-WhisperModel('base.en', device='cpu', compute_type='int8', cpu_threads=2)
-print('Whisper model cached.')
-"
+echo "==> Prefetching Faster-Whisper ${ASR_MODEL:-small.en} model (first run may take a minute)"
+python scripts/prefetch_asr.py
 
 # ---------------------------------------------------------------------------
 # 7. Systemd install (root) or foreground start (user)
@@ -138,10 +134,7 @@ if $IS_ROOT; then
     MODELS_DIR="$INSTALL_DIR/models" bash "$INSTALL_DIR/scripts/download_models.sh"
 
     echo "==> Prefetching Whisper in install dir"
-    "$INSTALL_DIR/venv/bin/python" -c "
-from faster_whisper import WhisperModel
-WhisperModel('base.en', device='cpu', compute_type='int8', cpu_threads=2)
-"
+    "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/scripts/prefetch_asr.py"
 
     bash "$INSTALL_DIR/scripts/setup_systemd.sh"
 

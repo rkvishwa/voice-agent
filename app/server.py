@@ -1,6 +1,7 @@
 """FastAPI WebSocket orchestration for the voice agent."""
 
 import asyncio
+import logging
 import re
 from pathlib import Path
 
@@ -9,13 +10,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from app import asr, llm, tts
-from app.config import (
-    FRAME_SAMPLES,
-    MIN_TURN_SECONDS,
-    SAMPLE_RATE,
-    SILENCE_FRAMES_FOR_END,
-)
-from app.vad import is_speech, pcm16_to_float32
+from app.vad import TurnDetector, pcm16_to_float32
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -35,9 +33,7 @@ class VoiceSession:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.history: list[dict] = []
-        self.audio_buffer: list[np.ndarray] = []
-        self.silence_frames = 0
-        self.in_speech = False
+        self.turn_detector = TurnDetector()
         self.active_task: asyncio.Task | None = None
         self.ai_busy = False
 
@@ -47,20 +43,6 @@ class VoiceSession:
     async def send_wav(self, wav_bytes: bytes) -> None:
         if wav_bytes:
             await self.websocket.send_bytes(wav_bytes)
-
-    def reset_turn_buffer(self) -> None:
-        self.audio_buffer.clear()
-        self.silence_frames = 0
-        self.in_speech = False
-
-    def buffer_duration(self) -> float:
-        total_samples = sum(chunk.size for chunk in self.audio_buffer)
-        return total_samples / SAMPLE_RATE
-
-    def get_turn_audio(self) -> np.ndarray:
-        if not self.audio_buffer:
-            return np.array([], dtype=np.float32)
-        return np.concatenate(self.audio_buffer)
 
     async def cancel_active_task(self) -> None:
         if self.active_task and not self.active_task.done():
@@ -77,7 +59,7 @@ class VoiceSession:
         await self.send_json({"type": "barge_in"})
 
     def launch_turn(self, audio: np.ndarray) -> None:
-        self.reset_turn_buffer()
+        self.turn_detector.reset()
         self.active_task = asyncio.create_task(self.process_turn(audio))
 
     async def process_turn(self, audio: np.ndarray) -> None:
@@ -125,6 +107,7 @@ class VoiceSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            logger.exception("process_turn failed")
             await self.send_json({"type": "error", "message": str(exc)})
         finally:
             self.ai_busy = False
@@ -135,27 +118,14 @@ class VoiceSession:
         if frame.size == 0:
             return
 
-        speaking = is_speech(frame)
+        from app.vad import is_speech_start
 
-        if speaking and self.ai_busy:
+        if is_speech_start(frame) and self.ai_busy:
             await self.handle_barge_in()
 
-        if speaking:
-            self.in_speech = True
-            self.silence_frames = 0
-            self.audio_buffer.append(frame)
-            return
-
-        if self.in_speech:
-            self.audio_buffer.append(frame)
-            self.silence_frames += 1
-
-            if (
-                self.silence_frames > SILENCE_FRAMES_FOR_END
-                and self.buffer_duration() > MIN_TURN_SECONDS
-            ):
-                audio = self.get_turn_audio()
-                self.launch_turn(audio)
+        turn_audio = self.turn_detector.process_frame(frame)
+        if turn_audio is not None and turn_audio.size > 0:
+            self.launch_turn(turn_audio)
 
 
 @app.websocket("/ws")
@@ -173,7 +143,6 @@ async def websocket_endpoint(websocket: WebSocket):
             if "bytes" in message and message["bytes"] is not None:
                 await session.handle_audio_frame(message["bytes"])
             elif "text" in message and message["text"] is not None:
-                # Ignore client text control messages for now.
                 pass
 
     except WebSocketDisconnect:
