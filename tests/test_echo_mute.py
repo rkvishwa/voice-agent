@@ -83,5 +83,40 @@ class TestSttMute(unittest.IsolatedAsyncioTestCase):
         session.speech_session.push_audio.assert_called_once()
 
 
+class TestAgentCaption(unittest.IsolatedAsyncioTestCase):
+    def _session(self) -> VoiceSession:
+        loop = asyncio.get_running_loop()
+        return VoiceSession(MagicMock(), loop)
+
+    async def test_send_agent_audio_emits_caption_before_wav(self) -> None:
+        session = self._session()
+        session.turn_id = 1
+        send_json = AsyncMock()
+        send_wav = AsyncMock()
+        session.send_json = send_json
+        session.send_wav = send_wav
+
+        ok = await session._send_agent_audio(b"wavbytes", 1, "Hello there.")
+        self.assertTrue(ok)
+        send_json.assert_awaited_once()
+        payload = send_json.await_args.args[0]
+        self.assertEqual(payload["type"], "agent_caption")
+        self.assertEqual(payload["text"], "Hello there.")
+        send_wav.assert_awaited_once_with(b"wavbytes")
+
+    async def test_send_agent_audio_skips_empty_caption(self) -> None:
+        session = self._session()
+        session.turn_id = 1
+        send_json = AsyncMock()
+        send_wav = AsyncMock()
+        session.send_json = send_json
+        session.send_wav = send_wav
+
+        ok = await session._send_agent_audio(b"wavbytes", 1, "   ")
+        self.assertTrue(ok)
+        send_json.assert_not_awaited()
+        send_wav.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()

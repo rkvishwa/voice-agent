@@ -210,7 +210,7 @@ class VoiceSession:
             self.active_task.cancel()
         self.active_task = asyncio.create_task(self.process_turn(user_text, turn_id))
 
-    async def _send_agent_audio(self, wav: bytes, turn_id: int) -> bool:
+    async def _send_agent_audio(self, wav: bytes, turn_id: int, caption: str = "") -> bool:
         if not wav or turn_id != self.turn_id:
             return False
         if not self._agent_audio_open:
@@ -220,6 +220,16 @@ class VoiceSession:
         if not self._barge_in.armed:
             self._barge_in.arm()
             logger.info("turn_id=%s barge-in armed after first audio chunk", turn_id)
+        caption = caption.strip()
+        if caption:
+            await self.send_json(
+                {
+                    "type": "agent_caption",
+                    "role": "agent",
+                    "text": caption,
+                    "turn_id": turn_id,
+                }
+            )
         await self.send_wav(wav)
         return True
 
@@ -262,7 +272,7 @@ class VoiceSession:
                             self.tts_voice,
                             self.tts_speed,
                         )
-                        if await self._send_agent_audio(wav, turn_id):
+                        if await self._send_agent_audio(wav, turn_id, clause):
                             sent_audio = True
 
             remainder = clause_buffer.strip()
@@ -274,13 +284,18 @@ class VoiceSession:
                     self.tts_voice,
                     self.tts_speed,
                 )
-                if await self._send_agent_audio(wav, turn_id):
+                if await self._send_agent_audio(wav, turn_id, remainder):
                     sent_audio = True
 
             agent_text = " ".join(agent_text_parts).strip()
             if agent_text and turn_id == self.turn_id:
                 await self.send_json(
-                    {"type": "transcript", "role": "agent", "text": agent_text}
+                    {
+                        "type": "transcript",
+                        "role": "agent",
+                        "text": agent_text,
+                        "final": True,
+                    }
                 )
                 self.history.append({"role": "assistant", "content": agent_text})
                 self._recent_agent_text = agent_text

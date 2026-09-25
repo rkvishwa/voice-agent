@@ -120,6 +120,12 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
+    .msg.agent.partial .role { color: #81c995; }
+    .msg.agent.partial .text {
+      font-size: 0.95rem;
+      color: #bdc1c6;
+      font-style: italic;
+    }
     .msg .text { font-size: 0.95rem; }
   </style>
 </head>
@@ -163,11 +169,12 @@
     const PROCESSOR_SIZE = 4096; // must be 256|512|1024|2048|4096|8192|16384
     const SPEECH_RMS_THRESHOLD = 0.02;
     const BARGE_IN_PLAYBACK_RMS = 0.04;
-    const BARGE_IN_SUSTAINED_MS = 200;
+    const BARGE_IN_FLOOR_RATIO = 2.2;
+    const BARGE_IN_SUSTAINED_BLOCKS = 3;
+    const BARGE_IN_FLOOR_DECAY = 0.35;
+    const BARGE_IN_FLOOR_RISE = 0.004;
     const ECHO_TAIL_MS = 800;
     const MIC_GAIN = 3.0;
-    const BARGE_IN_ABOVE_FLOOR = 0.025;
-    const BARGE_IN_FLOOR_RATIO = 1.8;
 
     const TTS_STORAGE_KEY = 'voice-agent-tts-v1';
 
@@ -200,12 +207,17 @@
     let isPlaying = false;
     let inEchoTail = false;
     let echoTailTimer = null;
-    let playbackBargeInSince = null;
+    let playbackBargeInLoudBlocks = 0;
     let agentPlaybackActive = false;
     let agentAudioStreamComplete = false;
     let pendingPlaybackIdleEpoch = null;
     let playbackNoiseFloor = 0;
     let liveCaptionEl = null;
+    let liveAgentCaptionEl = null;
+    let pendingAgentCaption = null;
+    let stashedAgentFinalText = null;
+    let agentRevealedText = '';
+    let agentWordRevealTimer = null;
     let speechReady = false;
     let startupFailed = false;
 
@@ -247,6 +259,92 @@
     function finalizeUserTranscript(text) {
       clearLiveCaption();
       addTranscript('user', text);
+    }
+
+    function clearAgentWordRevealTimer() {
+      if (agentWordRevealTimer !== null) {
+        clearInterval(agentWordRevealTimer);
+        agentWordRevealTimer = null;
+      }
+    }
+
+    function ensureLiveAgentCaption() {
+      if (!liveAgentCaptionEl) {
+        liveAgentCaptionEl = document.createElement('div');
+        liveAgentCaptionEl.className = 'msg agent partial';
+        liveAgentCaptionEl.innerHTML =
+          '<div class="role">agent<span class="badge">live</span></div><div class="text"></div>';
+        transcriptEl.appendChild(liveAgentCaptionEl);
+      }
+      return liveAgentCaptionEl.querySelector('.text');
+    }
+
+    function updateLiveAgentCaptionDisplay() {
+      const textEl = ensureLiveAgentCaption();
+      textEl.textContent = agentRevealedText.trim();
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function startClauseWordReveal(clauseText, durationSec) {
+      clearAgentWordRevealTimer();
+      const words = clauseText.trim().split(/\s+/).filter(Boolean);
+      if (!words.length) return;
+
+      const prefix = agentRevealedText.trim();
+      const base = prefix ? `${prefix} ` : '';
+      let clausePart = words[0];
+      agentRevealedText = base + clausePart;
+      updateLiveAgentCaptionDisplay();
+
+      if (words.length === 1) return;
+
+      const remaining = words.slice(1);
+      const intervalMs = Math.max(16, (durationSec * 1000) / remaining.length);
+      let idx = 0;
+      agentWordRevealTimer = setInterval(() => {
+        clausePart += ` ${remaining[idx]}`;
+        agentRevealedText = base + clausePart;
+        updateLiveAgentCaptionDisplay();
+        idx += 1;
+        if (idx >= remaining.length) {
+          clearAgentWordRevealTimer();
+        }
+      }, intervalMs);
+    }
+
+    function flushClauseWordReveal(clauseText, clauseBase) {
+      clearAgentWordRevealTimer();
+      const trimmed = clauseText.trim();
+      if (!trimmed) return;
+      const base = clauseBase.trim();
+      agentRevealedText = base ? `${base} ${trimmed}` : trimmed;
+      updateLiveAgentCaptionDisplay();
+    }
+
+    function clearLiveAgentCaption() {
+      clearAgentWordRevealTimer();
+      if (liveAgentCaptionEl) {
+        liveAgentCaptionEl.remove();
+        liveAgentCaptionEl = null;
+      }
+    }
+
+    function resetAgentCaptionState() {
+      clearLiveAgentCaption();
+      pendingAgentCaption = null;
+      stashedAgentFinalText = null;
+      agentRevealedText = '';
+    }
+
+    function finalizeAgentTranscript() {
+      clearAgentWordRevealTimer();
+      const finalText = (stashedAgentFinalText || agentRevealedText).trim();
+      stashedAgentFinalText = null;
+      agentRevealedText = '';
+      clearLiveAgentCaption();
+      if (finalText) {
+        addTranscript('agent', finalText);
+      }
     }
 
     function addTranscript(role, text) {
@@ -373,6 +471,7 @@
       if (!agentAudioStreamComplete) {
         return;
       }
+      finalizeAgentTranscript();
       cancelEchoTail();
       inEchoTail = true;
       echoTailTimer = setTimeout(() => {
@@ -387,7 +486,21 @@
       agentAudioStreamComplete = false;
       pendingPlaybackIdleEpoch = null;
       playbackNoiseFloor = 0;
-      playbackBargeInSince = null;
+      playbackBargeInLoudBlocks = 0;
+      pendingAgentCaption = null;
+    }
+
+    function updatePlaybackNoiseFloor(rms) {
+      if (playbackNoiseFloor <= 0) {
+        playbackNoiseFloor = rms;
+        return;
+      }
+      if (rms <= playbackNoiseFloor) {
+        playbackNoiseFloor =
+          playbackNoiseFloor * (1 - BARGE_IN_FLOOR_DECAY) + rms * BARGE_IN_FLOOR_DECAY;
+      } else {
+        playbackNoiseFloor += (rms - playbackNoiseFloor) * BARGE_IN_FLOOR_RISE;
+      }
     }
 
     function flushPendingSamples() {
@@ -410,35 +523,37 @@
     }
 
     function bargeInThreshold() {
-      const floorBoost = playbackNoiseFloor * BARGE_IN_FLOOR_RATIO + BARGE_IN_ABOVE_FLOOR;
+      const floorBoost = playbackNoiseFloor * BARGE_IN_FLOOR_RATIO;
       return Math.max(BARGE_IN_PLAYBACK_RMS, floorBoost);
     }
 
     function maybeClientBargeIn(rms) {
       if (!agentAudible()) {
-        playbackBargeInSince = null;
+        playbackBargeInLoudBlocks = 0;
         playbackNoiseFloor = playbackNoiseFloor * 0.95;
         return;
       }
-      playbackNoiseFloor = playbackNoiseFloor
-        ? Math.max(rms * 0.35, playbackNoiseFloor * 0.92 + rms * 0.08)
-        : rms;
+      updatePlaybackNoiseFloor(rms);
       const threshold = bargeInThreshold();
       if (rms > threshold) {
-        const now = performance.now();
-        if (playbackBargeInSince === null) {
-          playbackBargeInSince = now;
-        } else if (now - playbackBargeInSince >= BARGE_IN_SUSTAINED_MS) {
-          playbackBargeInSince = null;
+        playbackBargeInLoudBlocks += 1;
+        if (playbackBargeInLoudBlocks >= BARGE_IN_SUSTAINED_BLOCKS) {
+          playbackBargeInLoudBlocks = 0;
           triggerClientBargeIn();
         }
       } else {
-        playbackBargeInSince = null;
+        playbackBargeInLoudBlocks = 0;
       }
     }
 
     function handleBargeIn() {
       cancelEchoTail();
+      clearAgentWordRevealTimer();
+      const partialAgent = agentRevealedText.trim();
+      stashedAgentFinalText = null;
+      agentRevealedText = '';
+      clearLiveAgentCaption();
+      pendingAgentCaption = null;
       resetAgentPlaybackState();
       pendingSamples = new Float32Array(0);
       if (currentSource) {
@@ -447,6 +562,9 @@
       }
       playbackQueue.length = 0;
       isPlaying = false;
+      if (partialAgent) {
+        addTranscript('agent', partialAgent);
+      }
       clearLiveCaption();
       setStatus('Listening (barge-in)', 'connected');
     }
@@ -467,13 +585,18 @@
       setStatus('Agent speaking…', 'speaking');
       const ctx = await ensurePlaybackContext();
 
-      const arrayBuffer = playbackQueue.shift();
+      const item = playbackQueue.shift();
+      const arrayBuffer = item.audio;
+      const clauseText = item.text || '';
+      const clauseBase = agentRevealedText.trim();
       try {
         const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        startClauseWordReveal(clauseText, audioBuffer.duration);
         currentSource = ctx.createBufferSource();
         currentSource.buffer = audioBuffer;
         currentSource.connect(ctx.destination);
         currentSource.onended = () => {
+          flushClauseWordReveal(clauseText, clauseBase);
           currentSource = null;
           isPlaying = false;
           if (playbackQueue.length > 0) {
@@ -495,9 +618,16 @@
       if (!agentPlaybackActive) {
         agentPlaybackActive = true;
         agentAudioStreamComplete = false;
+        stashedAgentFinalText = null;
+        agentRevealedText = '';
+        clearLiveAgentCaption();
       }
       cancelEchoTail();
-      playbackQueue.push(arrayBuffer);
+      playbackQueue.push({
+        audio: arrayBuffer,
+        text: pendingAgentCaption || '',
+      });
+      pendingAgentCaption = null;
       playNext();
     }
 
@@ -668,9 +798,20 @@
               if (!isPlaying) {
                 setStatus('Hearing you…', 'hearing');
               }
+            } else if (msg.type === 'agent_caption') {
+              pendingAgentCaption = msg.text;
             } else if (msg.type === 'transcript') {
               if (msg.role === 'user' && msg.final) {
                 finalizeUserTranscript(msg.text);
+              } else if (msg.role === 'agent' && msg.final) {
+                stashedAgentFinalText = msg.text;
+                if (
+                  !agentPlaybackActive &&
+                  !isPlaying &&
+                  playbackQueue.length === 0
+                ) {
+                  finalizeAgentTranscript();
+                }
               } else {
                 addTranscript(msg.role, msg.text);
               }
@@ -722,6 +863,7 @@
       setTtsControlsDisabled(true);
       transcriptEl.innerHTML = '';
       clearLiveCaption();
+      resetAgentCaptionState();
       pendingSamples = new Float32Array(0);
       resamplePhase = 0;
       resetAgentPlaybackState();
