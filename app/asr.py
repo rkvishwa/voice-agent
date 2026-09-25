@@ -1,148 +1,157 @@
-"""Faster-Whisper speech-to-text with serialized preview and final decoders."""
+"""Azure AI Speech streaming speech-to-text."""
 
 import asyncio
 import logging
-import time
+from collections.abc import Awaitable, Callable
 from typing import Optional
 
-import numpy as np
-from faster_whisper import WhisperModel
+import azure.cognitiveservices.speech as speechsdk
 
 from app.config import (
-    ASR_COMPUTE_TYPE,
-    ASR_CPU_THREADS,
-    ASR_FINAL_BEAM_SIZE,
-    ASR_FINAL_MODEL,
-    ASR_INITIAL_PROMPT,
-    ASR_PREVIEW_BEAM_SIZE,
-    ASR_PREVIEW_MODEL,
+    AZURE_SPEECH_KEY,
+    AZURE_SPEECH_LANGUAGE,
+    AZURE_SPEECH_PHRASES,
+    AZURE_SPEECH_REGION,
     SAMPLE_RATE,
 )
 
 logger = logging.getLogger(__name__)
 
-_preview_model: Optional[WhisperModel] = None
-_final_model: Optional[WhisperModel] = None
+PartialCallback = Callable[[str], Awaitable[None]]
+FinalCallback = Callable[[str], Awaitable[None]]
+ErrorCallback = Callable[[str], Awaitable[None]]
 
 
-class ASREngine:
-    """Serialize CPU inference; final decode takes priority over preview."""
+def build_partial_event(text: str, turn_id: int) -> dict:
+    """Build a WebSocket payload for a live partial transcript."""
+    return {
+        "type": "transcript_partial",
+        "role": "user",
+        "text": text,
+        "turn_id": turn_id,
+    }
 
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._final_active = False
 
-    def _get_preview_model(self) -> WhisperModel:
-        global _preview_model
-        if _preview_model is None:
-            logger.info(
-                "loading ASR preview model=%s compute=%s threads=%d",
-                ASR_PREVIEW_MODEL,
-                ASR_COMPUTE_TYPE,
-                ASR_CPU_THREADS,
-            )
-            _preview_model = WhisperModel(
-                ASR_PREVIEW_MODEL,
-                device="cpu",
-                compute_type=ASR_COMPUTE_TYPE,
-                cpu_threads=ASR_CPU_THREADS,
-            )
-        return _preview_model
+def build_final_event(text: str, turn_id: int) -> dict:
+    """Build a WebSocket payload for a finalized user transcript."""
+    return {
+        "type": "transcript",
+        "role": "user",
+        "text": text,
+        "turn_id": turn_id,
+        "final": True,
+    }
 
-    def _get_final_model(self) -> WhisperModel:
-        global _final_model
-        if _final_model is None:
-            logger.info(
-                "loading ASR final model=%s compute=%s threads=%d",
-                ASR_FINAL_MODEL,
-                ASR_COMPUTE_TYPE,
-                ASR_CPU_THREADS,
-            )
-            _final_model = WhisperModel(
-                ASR_FINAL_MODEL,
-                device="cpu",
-                compute_type=ASR_COMPUTE_TYPE,
-                cpu_threads=ASR_CPU_THREADS,
-            )
-        return _final_model
 
-    def _transcribe_sync(
+class AzureSpeechSession:
+    """Stream PCM16 audio to Azure Speech and emit partial/final transcripts."""
+
+    def __init__(
         self,
-        audio: np.ndarray,
-        model: WhisperModel,
-        beam_size: int,
-        label: str,
-    ) -> str:
-        audio_duration = audio.size / SAMPLE_RATE if audio.size else 0.0
-        start = time.monotonic()
+        loop: asyncio.AbstractEventLoop,
+        on_partial: PartialCallback,
+        on_final: FinalCallback,
+        on_error: ErrorCallback,
+    ) -> None:
+        self._loop = loop
+        self._on_partial = on_partial
+        self._on_final = on_final
+        self._on_error = on_error
+        self._closed = False
+        self._recognizer: Optional[speechsdk.SpeechRecognizer] = None
+        self._push_stream: Optional[speechsdk.audio.PushAudioInputStream] = None
 
-        kwargs: dict = {
-            "beam_size": beam_size,
-            "language": "en",
-            "condition_on_previous_text": False,
-        }
-        if ASR_INITIAL_PROMPT:
-            kwargs["initial_prompt"] = ASR_INITIAL_PROMPT
+    def _schedule(self, coro: Awaitable[None]) -> None:
+        if self._closed:
+            return
+        asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-        segments, _ = model.transcribe(audio, **kwargs)
-        text = " ".join(segment.text.strip() for segment in segments).strip()
-
-        elapsed = time.monotonic() - start
-        rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
-        logger.info(
-            "%s decode duration=%.2fs audio=%.2fs rtf=%.2f chars=%d",
-            label,
-            elapsed,
-            audio_duration,
-            rtf,
-            len(text),
+    def _start_sync(self) -> None:
+        speech_config = speechsdk.SpeechConfig(
+            subscription=AZURE_SPEECH_KEY,
+            region=AZURE_SPEECH_REGION,
         )
-        return text
+        speech_config.speech_recognition_language = AZURE_SPEECH_LANGUAGE
 
-    async def transcribe_preview(self, audio: np.ndarray) -> str:
-        """Fast partial transcription for live captions."""
-        if self._final_active or audio.size == 0:
-            return ""
-        async with self._lock:
-            if self._final_active:
-                return ""
-            return await asyncio.to_thread(
-                self._transcribe_sync,
-                audio,
-                self._get_preview_model(),
-                ASR_PREVIEW_BEAM_SIZE,
-                "preview",
-            )
+        stream_format = speechsdk.audio.AudioStreamFormat(
+            samples_per_second=SAMPLE_RATE,
+            bits_per_sample=16,
+            channels=1,
+        )
+        self._push_stream = speechsdk.audio.PushAudioInputStream(stream_format)
+        audio_config = speechsdk.audio.AudioConfig(stream=self._push_stream)
 
-    async def transcribe_final(self, audio: np.ndarray) -> str:
-        """Higher-accuracy transcription after end-of-turn."""
-        if audio.size == 0:
-            return ""
-        self._final_active = True
-        try:
-            async with self._lock:
-                return await asyncio.to_thread(
-                    self._transcribe_sync,
-                    audio,
-                    self._get_final_model(),
-                    ASR_FINAL_BEAM_SIZE,
-                    "final",
-                )
-        finally:
-            self._final_active = False
+        self._recognizer = speechsdk.SpeechRecognizer(
+            speech_config=speech_config,
+            audio_config=audio_config,
+        )
 
+        if AZURE_SPEECH_PHRASES:
+            phrase_list = speechsdk.PhraseListGrammar.from_recognizer(self._recognizer)
+            for phrase in AZURE_SPEECH_PHRASES:
+                phrase_list.addPhrase(phrase)
 
-_engine = ASREngine()
+        self._recognizer.recognizing.connect(self._handle_recognizing)
+        self._recognizer.recognized.connect(self._handle_recognized)
+        self._recognizer.canceled.connect(self._handle_canceled)
 
+        self._recognizer.start_continuous_recognition_async().get()
+        logger.info(
+            "Azure Speech session started region=%s language=%s",
+            AZURE_SPEECH_REGION,
+            AZURE_SPEECH_LANGUAGE,
+        )
 
-async def transcribe_preview(audio: np.ndarray) -> str:
-    return await _engine.transcribe_preview(audio)
+    async def start(self) -> None:
+        await asyncio.to_thread(self._start_sync)
 
+    def push_audio(self, pcm_bytes: bytes) -> None:
+        if self._closed or not self._push_stream or not pcm_bytes:
+            return
+        self._push_stream.write(pcm_bytes)
 
-async def transcribe_final(audio: np.ndarray) -> str:
-    return await _engine.transcribe_final(audio)
+    def _handle_recognizing(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
+        if self._closed:
+            return
+        if evt.result.reason != speechsdk.ResultReason.RecognizingSpeech:
+            return
+        text = evt.result.text.strip()
+        if text:
+            self._schedule(self._on_partial(text))
 
+    def _handle_recognized(self, evt: speechsdk.SpeechRecognitionEventArgs) -> None:
+        if self._closed:
+            return
+        if evt.result.reason != speechsdk.ResultReason.RecognizedSpeech:
+            return
+        text = evt.result.text.strip()
+        if text:
+            logger.info("Azure recognized: %s", text)
+            self._schedule(self._on_final(text))
 
-# Backward-compatible alias
-async def transcribe(audio: np.ndarray) -> str:
-    return await transcribe_final(audio)
+    def _handle_canceled(self, evt: speechsdk.SpeechRecognitionCanceledEventArgs) -> None:
+        if self._closed:
+            return
+        if evt.reason == speechsdk.CancellationReason.Error:
+            message = evt.error_details or "Azure Speech recognition canceled"
+            logger.error("Azure Speech error: %s", message)
+            self._schedule(self._on_error(message))
+
+    def _close_sync(self) -> None:
+        if self._recognizer is not None:
+            try:
+                self._recognizer.stop_continuous_recognition_async().get()
+            except Exception:
+                logger.exception("failed stopping Azure Speech recognizer")
+        if self._push_stream is not None:
+            try:
+                self._push_stream.close()
+            except Exception:
+                logger.exception("failed closing Azure Speech push stream")
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await asyncio.to_thread(self._close_sync)
+        logger.info("Azure Speech session closed")

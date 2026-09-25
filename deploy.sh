@@ -27,7 +27,7 @@ fi
 source .env
 
 MISSING=()
-for var in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY AZURE_OPENAI_DEPLOYMENT; do
+for var in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY AZURE_OPENAI_DEPLOYMENT AZURE_SPEECH_KEY AZURE_SPEECH_REGION; do
     if [[ -z "${!var:-}" ]]; then
         MISSING+=("$var")
     fi
@@ -103,12 +103,9 @@ pip install -r requirements.txt -q
 echo "==> Python dependencies installed"
 
 # ---------------------------------------------------------------------------
-# 6. Download models + prefetch Whisper
+# 6. Download Kokoro TTS models
 # ---------------------------------------------------------------------------
 bash scripts/download_models.sh
-
-echo "==> Prefetching Faster-Whisper models (${ASR_PREVIEW_MODEL:-small.en} + ${ASR_FINAL_MODEL:-medium.en})"
-PYTHONPATH="$SCRIPT_DIR" python "$SCRIPT_DIR/scripts/prefetch_asr.py"
 
 # ---------------------------------------------------------------------------
 # 7. Systemd install (root) or foreground start (user)
@@ -132,9 +129,6 @@ if $IS_ROOT; then
     sed -i "s|^MODELS_DIR=.*|MODELS_DIR=$INSTALL_DIR/models|" "$INSTALL_DIR/.env"
 
     MODELS_DIR="$INSTALL_DIR/models" bash "$INSTALL_DIR/scripts/download_models.sh"
-
-    echo "==> Prefetching Whisper in install dir"
-    PYTHONPATH="$INSTALL_DIR" "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/scripts/prefetch_asr.py"
 
     bash "$INSTALL_DIR/scripts/setup_systemd.sh"
 

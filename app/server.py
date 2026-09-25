@@ -3,17 +3,14 @@
 import asyncio
 import logging
 import re
-import time
 from pathlib import Path
 
-import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from app import asr, llm, tts
-from app.config import ASR_PREVIEW_INTERVAL_SEC, ASR_PREVIEW_MIN_SECONDS
-from app.partial_scheduler import PartialScheduler
-from app.vad import TurnDetector, is_speech_start, pcm16_to_float32
+from app.asr import AzureSpeechSession, build_final_event, build_partial_event
+from app.vad import is_speech_start, pcm16_to_float32
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,35 +28,34 @@ async def index():
 
 
 class VoiceSession:
-    """Per-connection state for turn detection, live captions, and barge-in."""
+    """Per-connection state for Azure Speech streaming and barge-in."""
 
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
         self.websocket = websocket
         self.history: list[dict] = []
-        self.turn_detector = TurnDetector()
-        self.partial_scheduler = PartialScheduler(
-            ASR_PREVIEW_INTERVAL_SEC,
-            ASR_PREVIEW_MIN_SECONDS,
-        )
         self.turn_id = 0
         self.active_task: asyncio.Task | None = None
-        self.partial_task: asyncio.Task | None = None
         self.ai_busy = False
+        self._closed = False
+        self.speech_session = AzureSpeechSession(
+            loop=loop,
+            on_partial=self._on_speech_partial,
+            on_final=self._on_speech_final,
+            on_error=self._on_speech_error,
+        )
+
+    async def start(self) -> None:
+        await self.speech_session.start()
 
     async def send_json(self, payload: dict) -> None:
-        await self.websocket.send_json(payload)
+        if not self._closed:
+            await self.websocket.send_json(payload)
 
     async def send_wav(self, wav_bytes: bytes) -> None:
-        if wav_bytes:
+        if wav_bytes and not self._closed:
             await self.websocket.send_bytes(wav_bytes)
 
-    def _cancel_partial_task(self) -> None:
-        if self.partial_task and not self.partial_task.done():
-            self.partial_task.cancel()
-        self.partial_task = None
-
     async def cancel_active_task(self) -> None:
-        self._cancel_partial_task()
         if self.active_task and not self.active_task.done():
             self.active_task.cancel()
             try:
@@ -71,80 +67,45 @@ class VoiceSession:
 
     async def handle_barge_in(self) -> None:
         self.turn_id += 1
-        self.partial_scheduler.reset()
         await self.cancel_active_task()
         await self.send_json({"type": "barge_in"})
 
-    def _on_speech_start(self) -> None:
-        self.turn_id += 1
-        self.partial_scheduler.reset()
-        self._cancel_partial_task()
+    async def _on_speech_partial(self, text: str) -> None:
+        if self._closed:
+            return
+        await self.send_json(build_partial_event(text, self.turn_id))
 
-    def _maybe_schedule_partial(self) -> None:
-        if not self.turn_detector.in_speech:
-            return
-        duration = self.turn_detector.active_duration()
-        now = time.monotonic()
-        if not self.partial_scheduler.should_schedule(duration, now):
-            return
-        self.partial_scheduler.mark_scheduled(now)
-        audio = self.turn_detector.active_snapshot()
-        if audio.size == 0:
+    async def _on_speech_final(self, text: str) -> None:
+        if self._closed or not text.strip():
             return
         turn_id = self.turn_id
-        self._cancel_partial_task()
-        self.partial_task = asyncio.create_task(self._run_partial(turn_id, audio))
+        await self.send_json(build_final_event(text, turn_id))
+        self.launch_turn(text, turn_id)
 
-    async def _run_partial(self, turn_id: int, audio: np.ndarray) -> None:
-        try:
-            text = await asr.transcribe_preview(audio)
-            if turn_id != self.turn_id:
-                return
-            if not self.turn_detector.in_speech:
-                return
-            if text:
-                await self.send_json(
-                    {
-                        "type": "transcript_partial",
-                        "role": "user",
-                        "text": text,
-                        "turn_id": turn_id,
-                    }
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("partial transcription failed")
+    async def _on_speech_error(self, message: str) -> None:
+        if self._closed:
+            return
+        await self.send_json({"type": "error", "message": message})
 
-    def launch_turn(self, audio: np.ndarray, turn_id: int) -> None:
-        self._cancel_partial_task()
-        self.turn_detector.reset()
-        self.active_task = asyncio.create_task(self.process_turn(audio, turn_id))
+    def launch_turn(self, user_text: str, turn_id: int) -> None:
+        if self.active_task and not self.active_task.done():
+            self.active_task.cancel()
+        self.active_task = asyncio.create_task(self.process_turn(user_text, turn_id))
 
-    async def process_turn(self, audio: np.ndarray, turn_id: int) -> None:
+    async def process_turn(self, user_text: str, turn_id: int) -> None:
         self.ai_busy = True
         try:
-            user_text = await asr.transcribe_final(audio)
             if turn_id != self.turn_id:
                 return
-            if not user_text:
-                return
 
-            await self.send_json(
-                {
-                    "type": "transcript",
-                    "role": "user",
-                    "text": user_text,
-                    "turn_id": turn_id,
-                    "final": True,
-                }
-            )
             self.history.append({"role": "user", "content": user_text})
 
             agent_text_parts: list[str] = []
             clause_buffer = ""
 
             async for token in llm.stream_llm_response(self.history):
+                if turn_id != self.turn_id:
+                    return
                 clause_buffer += token
                 while True:
                     match = CLAUSE_DELIMITERS.search(clause_buffer)
@@ -165,7 +126,7 @@ class VoiceSession:
                 await self.send_wav(wav)
 
             agent_text = " ".join(agent_text_parts).strip()
-            if agent_text:
+            if agent_text and turn_id == self.turn_id:
                 await self.send_json(
                     {"type": "transcript", "role": "agent", "text": agent_text}
                 )
@@ -188,23 +149,20 @@ class VoiceSession:
         if is_speech_start(frame) and self.ai_busy:
             await self.handle_barge_in()
 
-        was_in_speech = self.turn_detector.in_speech
-        turn_audio = self.turn_detector.process_frame(frame)
+        self.speech_session.push_audio(pcm_bytes)
 
-        if not was_in_speech and self.turn_detector.in_speech:
-            self._on_speech_start()
-
-        if self.turn_detector.in_speech:
-            self._maybe_schedule_partial()
-
-        if turn_audio is not None and turn_audio.size > 0:
-            self.launch_turn(turn_audio, self.turn_id)
+    async def close(self) -> None:
+        self._closed = True
+        await self.cancel_active_task()
+        await self.speech_session.close()
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    session = VoiceSession(websocket)
+    loop = asyncio.get_running_loop()
+    session = VoiceSession(websocket, loop)
+    await session.start()
 
     try:
         while True:
@@ -221,4 +179,4 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        await session.cancel_active_task()
+        await session.close()
