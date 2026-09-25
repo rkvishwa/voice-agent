@@ -124,9 +124,13 @@ fi
 # ---------------------------------------------------------------------------
 # Final HTTPS config
 # ---------------------------------------------------------------------------
+install_ssl_config() {
+    sed "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" "$SSL_TEMPLATE" > "$SITE_AVAILABLE"
+    sed -i "s/127.0.0.1:8000/127.0.0.1:$UPSTREAM_PORT/g" "$SITE_AVAILABLE"
+}
+
 echo "==> Installing HTTPS nginx config"
-sed "s/DOMAIN_PLACEHOLDER/$DOMAIN/g" "$SSL_TEMPLATE" > "$SITE_AVAILABLE"
-sed -i "s/127.0.0.1:8000/127.0.0.1:$UPSTREAM_PORT/g" "$SITE_AVAILABLE"
+install_ssl_config
 
 nginx -t
 systemctl reload nginx
