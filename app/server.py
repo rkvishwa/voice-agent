@@ -69,6 +69,8 @@ class VoiceSession:
         self.tts_backend: TtsBackend = default_backend
         self.tts_voice: str = default_voice_for_backend(default_backend)
         self.tts_speed: float = TTS_SPEED
+        self._stt_muted: bool = False
+        self._stt_ignore_finals_until: float = 0.0
         self.speech_session = AzureSpeechSession(
             loop=loop,
             on_partial=self._on_speech_partial,
@@ -104,7 +106,24 @@ class VoiceSession:
         self.active_task = None
         self.ai_busy = False
 
+    def _stt_results_suppressed(self) -> bool:
+        if self._stt_muted:
+            return True
+        return time.monotonic() < self._stt_ignore_finals_until
+
+    def mute_stt_for_playback(self) -> None:
+        if not self._stt_muted:
+            self._stt_muted = True
+            logger.info("STT muted for agent playback")
+
+    def handle_playback_idle(self) -> None:
+        self._stt_muted = False
+        self._stt_ignore_finals_until = time.monotonic() + 0.4
+        logger.info("STT unmuted after playback_idle (400ms final grace)")
+
     async def handle_barge_in(self) -> None:
+        self._stt_muted = False
+        self._stt_ignore_finals_until = 0.0
         self.turn_id += 1
         await self.cancel_active_task()
         await self.send_json({"type": "barge_in"})
@@ -126,12 +145,14 @@ class VoiceSession:
         )
 
     async def _on_speech_partial(self, text: str) -> None:
-        if self._closed:
+        if self._closed or self._stt_results_suppressed():
             return
         await self.send_json(build_partial_event(text, self.turn_id))
 
     async def _on_speech_final(self, text: str) -> None:
-        if self._closed or not text.strip():
+        if self._closed or not text.strip() or self._stt_results_suppressed():
+            if text.strip() and self._stt_results_suppressed():
+                logger.debug("dropped STT final while suppressed: %s", text[:80])
             return
         turn_id = self.turn_id
         await self.send_json(build_final_event(text, turn_id))
@@ -150,6 +171,7 @@ class VoiceSession:
     async def _send_agent_audio(self, wav: bytes, turn_id: int) -> None:
         if not wav or turn_id != self.turn_id:
             return
+        self.mute_stt_for_playback()
         if not self._barge_in.armed:
             self._barge_in.arm()
             logger.info("turn_id=%s barge-in armed after first audio chunk", turn_id)
@@ -253,9 +275,13 @@ class VoiceSession:
             )
             self._last_audio_log_at = now
 
+        if self._stt_muted:
+            return
+
         if self.ai_busy and self._barge_in.register_frame(pcm16_to_float32(boosted)):
             logger.info("barge-in fired turn_id=%s", self.turn_id)
             await self.handle_barge_in()
+            return
 
         self.speech_session.push_audio(boosted)
 
@@ -296,7 +322,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     payload = json.loads(message["text"])
                 except json.JSONDecodeError:
                     continue
-                if payload.get("type") == "tts_config":
+                msg_type = payload.get("type")
+                if msg_type == "tts_config":
                     try:
                         session.apply_tts_config(
                             payload.get("backend", ""),
@@ -307,6 +334,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         await session.send_json(
                             {"type": "error", "message": str(exc)}
                         )
+                elif msg_type == "playback_idle":
+                    session.handle_playback_idle()
+                elif msg_type == "barge_in":
+                    logger.info("client barge-in")
+                    await session.handle_barge_in()
 
     except WebSocketDisconnect:
         pass
